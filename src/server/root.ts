@@ -16,7 +16,7 @@ import {
 } from './actions/memory-actions.js';
 import { listArtifactsByChat, listHandoffsByChat } from './actions/read-actions.js';
 import { createWorkbench, listWorkbenches } from './actions/workbench-actions.js';
-import { createCallerFactory, createTRPCRouter, protectedProcedure } from './trpc.js';
+import { createCallerFactory, createTRPCRouter, protectedProcedure, publicProcedure } from './trpc.js';
 
 const idInput = z.object({ id: z.string().min(1) });
 const chatIdInput = z.object({ chatId: z.string().min(1) });
@@ -80,7 +80,9 @@ const workbenchPinnedRouter = createTRPCRouter({
 });
 
 const aiRouter = createTRPCRouter({
-  polish: protectedProcedure
+  // Public: the local (unauthenticated) build flow uses Polish too, so it must
+  // not require a session. It only rewrites the text the caller sends.
+  polish: publicProcedure
     .input(z.object({ text: z.string() }))
     .mutation(({ input }) => polishText(input)),
   suggestTasks: protectedProcedure.query(({ ctx }) => suggestTasks(ctx.user)),
