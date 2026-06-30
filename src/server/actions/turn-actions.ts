@@ -161,21 +161,25 @@ export async function dispatchTurn(input: DispatchInput): Promise<DispatchRespon
       .join('\n\n---\n\n') || undefined;
 
     let result;
+    let fallbackNote: AgentEvent | null = null;
     try {
       result = await runAgentTask({ adapter, workspace, task, message: turn.message, handoffContext });
     } catch (error) {
       // E2B opt-in: if the sandbox is unavailable, fall back to local-dispatch in
-      // this layer (not silently inside the adapter) so a misconfig is logged but
-      // the run still completes.
+      // this layer (not silently inside the adapter). The fallback is surfaced as
+      // an event on the task so a misconfig is visible in the UI, not hidden.
       if (error instanceof E2BUnavailableError) {
-        console.warn(`E2B unavailable, falling back to local-dispatch for ${task.id}: ${error.message}`);
+        fallbackNote = {
+          type: 'thinking_delta',
+          delta: `E2B unavailable (${error.message}); fell back to local-dispatch.`,
+        };
         result = await runAgentTask({ adapter: 'local-dispatch', workspace, task, message: turn.message, handoffContext });
       } else {
         throw error;
       }
     }
 
-    eventsByTask.set(task.id, result.events);
+    eventsByTask.set(task.id, fallbackNote ? [fallbackNote, ...result.events] : result.events);
     artifactByTask.set(task.id, artifactFromRun(turn, task, result));
 
     if (!result.ok) {
