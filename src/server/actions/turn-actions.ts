@@ -15,6 +15,7 @@ import type {
 } from '../types.js';
 import { runAgentTask, normalizeAdapter } from './agent-runner.js';
 import { E2BUnavailableError } from './adapters/e2b-adapter.js';
+import { MiniMaxUnavailableError } from './adapters/minimax-adapter.js';
 import {
   runScheduler,
   type ScheduledTask,
@@ -165,13 +166,13 @@ export async function dispatchTurn(input: DispatchInput): Promise<DispatchRespon
     try {
       result = await runAgentTask({ adapter, workspace, task, message: turn.message, handoffContext });
     } catch (error) {
-      // E2B opt-in: if the sandbox is unavailable, fall back to local-dispatch in
+      // Opt-in adapter unavailable (E2B / MiniMax): fall back to local-dispatch in
       // this layer (not silently inside the adapter). The fallback is surfaced as
       // an event on the task so a misconfig is visible in the UI, not hidden.
-      if (error instanceof E2BUnavailableError) {
+      if (error instanceof E2BUnavailableError || error instanceof MiniMaxUnavailableError) {
         fallbackNote = {
           type: 'thinking_delta',
-          delta: `E2B unavailable (${error.message}); fell back to local-dispatch.`,
+          delta: `${error.name} (${error.message}); fell back to local-dispatch.`,
         };
         result = await runAgentTask({ adapter: 'local-dispatch', workspace, task, message: turn.message, handoffContext });
       } else {
@@ -227,8 +228,23 @@ export async function dispatchTurn(input: DispatchInput): Promise<DispatchRespon
       .filter((artifact): artifact is Artifact => artifact !== undefined),
   ];
 
-  // The run failed only if a task ended failed/blocked with no successful repair.
-  const failed = run.tasks.some((task) => task.status === 'failed' || task.status === 'blocked');
+  // A failed task is "repaired" if a fixer in its lineage completed. Walk the
+  // producedFor chain from every completed fixer back to the originally failed
+  // task so a successful fix doesn't leave the whole run marked failed.
+  const taskById = new Map(run.tasks.map((task) => [task.id, task]));
+  const repaired = new Set<string>();
+  for (const task of run.tasks) {
+    if (task.status !== 'completed' || task.producedFor === undefined) continue;
+    let cursor: string | undefined = task.producedFor;
+    while (cursor) {
+      repaired.add(cursor);
+      cursor = taskById.get(cursor)?.producedFor;
+    }
+  }
+  // The run failed only if a task ended failed/blocked AND was not repaired.
+  const failed = run.tasks.some(
+    (task) => (task.status === 'failed' || task.status === 'blocked') && !repaired.has(task.id),
+  );
   const workflowRun = workflowRunFromTasks(run.tasks);
   const completed = await updateTurn(turn.id, (current) => ({
     ...current,

@@ -44,6 +44,7 @@ fixer output) for secrets and dangerous code; high-severity findings block.
 | `local-dispatch` (default) | Deterministic template output; used by devrt/CI. | — |
 | `agent-cli` / `claude-cli` / `opencode` | Spawns a local coding CLI in the workspace. | `ROUNDTABLE_ENABLE_EXTERNAL_AGENT=1` |
 | `e2b` | Runs the agent CLI inside an E2B sandbox. Falls back to `local-dispatch` (logged) if the key is missing. | `E2B_API_KEY` |
+| `minimax` | Runs each agent against the real MiniMax chat model (M3/M2.7). Strips `<think>` reasoning; falls back to `local-dispatch` if the key is missing. | `MINIMAX_API_KEY` |
 
 ```bash
 ROUNDTABLE_AGENT_ADAPTER=local-dispatch corepack pnpm cli workflow smoke --message "Build a waitlist page"

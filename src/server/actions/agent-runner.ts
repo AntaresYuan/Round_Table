@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import type { AgentEvent, ArtifactKind, PlanTask } from '../types.js';
 import { agentForTask, type AgentProfile } from './agent-roster.js';
 import { runOnE2B } from './adapters/e2b-adapter.js';
+import { miniMaxModel, MiniMaxUnavailableError, runOnMiniMax } from './adapters/minimax-adapter.js';
 
 export type AgentRunResult = {
   text: string;
@@ -22,6 +23,9 @@ export async function runAgentTask(input: {
   handoffContext?: string | undefined;
 }): Promise<AgentRunResult> {
   const adapter = normalizeAdapter(input.adapter);
+  if (adapter === 'minimax') {
+    return runMiniMaxTask(input);
+  }
   if (adapter === 'e2b') {
     return runE2BTask(input);
   }
@@ -33,8 +37,9 @@ export async function runAgentTask(input: {
 
 export function normalizeAdapter(
   value: string | null | undefined,
-): 'local-dispatch' | 'agent-cli' | 'e2b' {
+): 'local-dispatch' | 'agent-cli' | 'e2b' | 'minimax' {
   const raw = (value || process.env.ROUNDTABLE_AGENT_ADAPTER || 'local-dispatch').trim().toLowerCase();
+  if (raw === 'minimax') return 'minimax';
   if (raw === 'e2b') return 'e2b';
   const wantsExternalCli = raw === 'agent-cli'
     || raw === 'external-cli'
@@ -195,6 +200,71 @@ function e2bAgentEnv(): Record<string, string> {
     if (value !== undefined && /^(ANTHROPIC|OPENAI|ROUNDTABLE)_/.test(key)) env[key] = value;
   }
   return env;
+}
+
+// Runs the task against the real MiniMax model. Throws MiniMaxUnavailableError
+// (from runOnMiniMax) when no key is set — the dispatch layer catches it and
+// falls back to local-dispatch.
+async function runMiniMaxTask(input: {
+  workspace: string;
+  task: PlanTask;
+  message: string;
+  handoffContext?: string | undefined;
+}): Promise<AgentRunResult> {
+  const agent = agentForTask(input.task);
+  const path = pathForTask(input.task);
+  const toolId = `tool_${input.task.id}`;
+  const system = chatAgentPrompt(agent, input);
+  const user = input.handoffContext
+    ? `Task: ${input.task.title}\n\nUpstream deliverable to build on / review:\n\n${input.handoffContext}\n\nProduce your deliverable now.`
+    : `Task: ${input.task.title}\n\nProduce your deliverable now.`;
+  const started: AgentEvent[] = [
+    { type: 'thinking_delta', delta: `${agent.displayName} querying MiniMax model.` },
+    { type: 'tool_use', id: toolId, name: 'minimax_chat', input: { agentId: agent.id, role: agent.role, path } },
+  ];
+  try {
+    const run = await runOnMiniMax({
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: user },
+      ],
+      timeoutMs: timeoutMs(),
+    });
+    const text = run.text.trim() || `# ${input.task.title}\n\nMiniMax returned no usable content.`;
+    await writeWorkspaceFile(input.workspace, path, text);
+    const reasoningTokens = (run.usage?.['completion_tokens_details'] as { reasoning_tokens?: number } | undefined)?.reasoning_tokens;
+    return {
+      text,
+      path,
+      kind: kindForPath(path),
+      ok: true,
+      error: null,
+      events: [
+        ...started,
+        { type: 'tool_result', id: toolId, output: { model: miniMaxModel(), reasoningTokens: reasoningTokens ?? 0, chars: text.length } },
+        { type: 'file_change', path, kind: 'create', diff: `created ${path}` },
+        { type: 'text_delta', delta: `${agent.displayName} produced ${path} via MiniMax.` },
+        { type: 'done', finishReason: 'completed' },
+      ],
+    };
+  } catch (error) {
+    if (error instanceof MiniMaxUnavailableError) throw error; // let dispatch fall back
+    const message = error instanceof Error ? error.message : String(error);
+    const text = `# ${input.task.title}\n\nMiniMax request failed.\n\n${message}`;
+    await writeWorkspaceFile(input.workspace, path, text);
+    return {
+      text,
+      path,
+      kind: kindForPath(path),
+      ok: false,
+      error: message,
+      events: [
+        ...started,
+        { type: 'tool_result', id: toolId, output: { error: message }, isError: true },
+        { type: 'error', message, recoverable: true },
+      ],
+    };
+  }
 }
 
 function pathForTask(task: PlanTask): string {
@@ -369,6 +439,36 @@ function agentPrompt(agent: AgentProfile, input: { task: PlanTask; message: stri
     'Work inside the current working directory. You may inspect and edit files as needed for this role.',
     'Do not touch files outside this working directory.',
     'When finished, print a concise Markdown summary with changed files, commands run, and any blockers.',
+  ].join('\n\n');
+}
+
+// Prompt for chat-only model adapters (MiniMax): no shell, no file tools — the
+// deliverable must come back IN the response text. This is deliberately
+// different from agentPrompt (which targets file-editing CLIs) because a chat
+// model told to "edit files" just emits shell commands it can't run.
+function chatAgentPrompt(
+  agent: AgentProfile,
+  input: { task: PlanTask; message: string; handoffContext?: string | undefined },
+): string {
+  const isHtml = pathForTask(input.task).endsWith('.html');
+  const roleInstruction = {
+    planner: 'Break the goal into a short, ordered task list with clear ownership. Output the plan as Markdown.',
+    pm: 'State the product intent, constraints, and acceptance criteria as Markdown.',
+    architect: 'Describe the technical approach, key interfaces, and risks as Markdown.',
+    implementer: isHtml
+      ? 'Output a COMPLETE, self-contained HTML document (with inline CSS/JS) that fulfills the task. Output only the HTML, no prose, no code fences.'
+      : 'Output the complete deliverable content directly (code or Markdown). Do not describe what you would do — produce it.',
+    reviewer: 'Review the upstream deliverable. Output a Markdown report: concrete issues, risks, and missing pieces, each with severity. If it is solid, say so explicitly.',
+    fixer: 'Apply a focused fix for the reported problem and output the corrected deliverable plus a short summary of what changed.',
+  }[agent.role] ?? 'Produce your deliverable directly in the response.';
+
+  return [
+    'You are one specialist on the Roundtable AI team. You respond through a chat API:',
+    'you have NO shell and NO file system — never emit commands like `ls` or `cat`.',
+    'Put your entire deliverable directly in your reply.',
+    `You are ${agent.displayName}, the ${agent.role}.`,
+    `Instruction: ${roleInstruction}`,
+    `Original user request: ${input.message}`,
   ].join('\n\n');
 }
 
