@@ -411,6 +411,58 @@ function Whiteboard({ tasks, agents, posted, onZoom, big, live, run }) {
 }
 
 /* ---- contribution beam (active speaker only) + breakout arc -------------- */
+// Maps a task to the seat of the agent that owns it, so dependency arrows can be
+// drawn between real seats. Mirrors the owner resolution used elsewhere.
+function seatForTask(task, seats, agents) {
+  const direct = task?.owner && seats.find((s) => s.agentId === task.owner);
+  if (direct) return direct;
+  const role = String(task?.assignee || '').replace(/^@/, '');
+  const byRole = Object.values(agents).find((a) => a.role === role && !a.pm);
+  return byRole ? seats.find((s) => s.agentId === byRole.agentId) : null;
+}
+
+// Dependency arrows: when a task is done, draw an arrow from its agent's seat to
+// each of its dependencies' seats — "I depend on you" (Vera → Atlas). They appear
+// progressively as tasks complete, building up the real dependency graph on the
+// table. This is a static relationship, not an upstream→downstream flow.
+function DependencyArrows({ scene, agents, seats }) {
+  const tasks = scene.tasks || [];
+  if (tasks.length === 0) return null;
+  const byId = new Map(tasks.map((t) => [t.id, t]));
+  const edges = [];
+  for (const task of tasks) {
+    if (task.status !== 'completed') continue; // only after this task is done
+    const from = seatForTask(task, seats, agents);
+    if (!from) continue;
+    for (const depId of task.deps || []) {
+      const dep = byId.get(depId);
+      const to = seatForTask(dep, seats, agents);
+      if (!to || to.angle === from.angle) continue;
+      edges.push({ id: `${task.id}->${depId}`, from, to, color: (agents[task.owner] || {}).color || 'var(--accent)' });
+    }
+  }
+  if (edges.length === 0) return null;
+  return (
+    <>
+      {edges.map((e) => {
+        const a = seatPos(e.from.angle), b = seatPos(e.to.angle);
+        // Curve the arrow toward the table center so multiple edges fan out cleanly.
+        const mx = (a.x + b.x) / 2 + (L.TBL.cx - (a.x + b.x) / 2) * 0.5;
+        const my = (a.y + b.y) / 2 + (L.TBL.cy - (a.y + b.y) / 2) * 0.5;
+        // Stop short of the target seat so the arrowhead sits beside it, not on it.
+        const dx = b.x - mx, dy = b.y - my;
+        const len = Math.hypot(dx, dy) || 1;
+        const ex = b.x - (dx / len) * 26, ey = b.y - (dy / len) * 26;
+        return (
+          <path key={e.id} className="rt-fade" d={`M ${a.x} ${a.y} Q ${mx} ${my} ${ex} ${ey}`}
+            fill="none" stroke={e.color} strokeWidth="2" strokeLinecap="round"
+            markerEnd="url(#rt-dephead)" opacity=".7" />
+        );
+      })}
+    </>
+  );
+}
+
 function Beams({ scene, agents, seats }) {
   const spk = scene.speech && (scene.speech.mode === 'working' || scene.speech.mode === 'speaking') ? scene.speech.agentId : null;
   const seat = spk && seats.find((s) => s.agentId === spk);
@@ -425,11 +477,18 @@ function Beams({ scene, agents, seats }) {
   }
   return (
     <svg width={L.W} height={L.H} style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 20 }}>
+      <defs>
+        <marker id="rt-dephead" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"
+          markerUnits="userSpaceOnUse">
+          <path d="M0 0 L7 4 L0 8 z" fill="var(--text-muted)" />
+        </marker>
+      </defs>
       {seat && (() => { const p = seatPos(seat.angle); return (
         <line x1={p.x} y1={p.y} x2={L.TBL.cx} y2={L.TBL.cy} stroke={agents[spk].color} strokeWidth="2"
           strokeLinecap="round" strokeDasharray="1 9" opacity=".4" style={{ animation: 'rt-dash 1.1s linear infinite' }} />
       ); })()}
       {arc && <path d={arc} fill="none" stroke="var(--text-faint)" strokeWidth="1.4" strokeDasharray="4 6" opacity=".55" />}
+      <DependencyArrows scene={scene} agents={agents} seats={seats} />
     </svg>
   );
 }

@@ -12,7 +12,9 @@ const BodySchema = z.object({
 export async function POST(req: Request) {
   try {
     const body = BodySchema.parse(await req.json());
-    return Response.json(await approveTurn(body));
+    // From the web client, always run dispatch in the background so the approve
+    // call returns immediately and the UI can poll live per-agent progress.
+    return Response.json(await approveTurn({ ...body, background: true }));
   } catch (error) {
     return jsonError(error);
   }

@@ -1,9 +1,12 @@
-import { mkdir } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { mkdir, rm } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
 import { id, mutateData, nowIso, readData } from '../store.js';
 import type {
   Actor,
+  AgentEvent,
   Artifact,
+  ClarifyAnswer,
+  ClarifyQuestion,
   DispatchRecord,
   Handoff,
   Intake,
@@ -12,7 +15,17 @@ import type {
   PlanTask,
   WorkflowRun,
 } from '../types.js';
+import { applyAnswers, assessClarity } from './clarify-actions.js';
 import { runAgentTask, normalizeAdapter } from './agent-runner.js';
+import { E2BUnavailableError } from './adapters/e2b-adapter.js';
+import { MiniMaxUnavailableError } from './adapters/minimax-adapter.js';
+import { OpenAICompatUnavailableError } from './adapters/openai-compat-adapter.js';
+import {
+  runScheduler,
+  type ScheduledTask,
+  type TaskResult,
+} from './scheduler.js';
+import { describeFindings, hasBlockingFinding, safetyEnabled, scanArtifact, type SafetyFinding } from './safety.js';
 import { AGENT_ROSTER, mentionedAgents, mentionTokens, messageWithoutMentions, type AgentProfile } from './agent-roster.js';
 
 export type CreateTurnInput = {
@@ -27,6 +40,10 @@ export type ApprovalInput = {
   decision: 'approve' | 'reject';
   autoDispatch?: boolean | undefined;
   agentAdapter?: string | undefined;
+  // When true, kick off dispatch in the background and return immediately with
+  // dispatchStatus 'running' — the client then polls /history for live progress.
+  // When false/omitted, await the full run (used by tests and the CLI).
+  background?: boolean | undefined;
 };
 
 export type DispatchInput = {
@@ -39,27 +56,87 @@ export async function createTurn(input: CreateTurnInput): Promise<TurnResponse> 
   if (!message) throw new ActionError('missing_message', 400);
   const turnId = input.turnId?.trim() || id('turn');
   const chatId = input.chatId?.trim() || null;
-  const intake = intakeFromMessage(message);
-  const plan = planFromMessage(message);
-  const artifacts = baseArtifacts(turnId, chatId ?? `local-${turnId}`, message, intake, plan);
+
+  // Clarify gate: the planner judges whether the request is clear enough to plan.
+  // If not, pause here with multiple-choice questions and DON'T build a plan yet —
+  // the user answers, then answerClarification() resumes with the enriched goal.
+  const assessment = await assessClarity(message);
   const now = nowIso();
-  const turn: LocalTurn = {
+  if (assessment.needsClarification) {
+    const turn = buildTurn({
+      turnId,
+      chatId,
+      ownerId: input.actor?.id ?? null,
+      message,
+      now,
+      needsClarification: true,
+      clarifyQuestions: assessment.questions,
+      clarifyAnswers: [],
+    });
+    await mutateData((data) => {
+      data.turns = [turn, ...data.turns.filter((item) => item.id !== turnId)];
+    });
+    return turnResponse(turn);
+  }
+
+  const turn = buildTurn({
+    turnId,
+    chatId,
+    ownerId: input.actor?.id ?? null,
+    message,
+    now,
+  });
+  await mutateData((data) => {
+    data.turns = [turn, ...data.turns.filter((item) => item.id !== turnId)];
+    if (chatId) {
+      upsertArtifacts(data.artifacts, turn.artifacts);
+      data.handoffs.push(handoffForTurn(input.actor, chatId, turn));
+    }
+  });
+  return turnResponse(turn);
+}
+
+// Builds a LocalTurn. When `needsClarification` is set the turn is parked before
+// planning (empty plan); otherwise a real plan + base artifacts are attached.
+function buildTurn(opts: {
+  turnId: string;
+  chatId: string | null;
+  ownerId: string | null;
+  message: string;
+  now: string;
+  needsClarification?: boolean;
+  clarifyQuestions?: ClarifyQuestion[];
+  clarifyAnswers?: ClarifyAnswer[];
+}): LocalTurn {
+  const { turnId, chatId, ownerId, message, now } = opts;
+  const parked = opts.needsClarification === true;
+  const intake = intakeFromMessage(message);
+  const plan = parked ? { summary: `Awaiting clarification: ${message.slice(0, 80)}`, tasks: [] } : planFromMessage(message);
+  const artifacts = parked ? [] : baseArtifacts(turnId, chatId ?? `local-${turnId}`, message, intake, plan);
+  return {
     id: turnId,
     localChatId: chatId,
-    ownerId: input.actor?.id ?? null,
+    ownerId,
     message,
     status: 'done',
     createdAt: now,
     provider: 'roundtable-local',
     model: 'agent-chain-v1',
-    pmMessage: `Starting ${plan.tasks.length} agent step${plan.tasks.length === 1 ? '' : 's'}.`,
-    needsApproval: false,
-    approvalStatus: 'approved',
-    approvedAt: now,
+    pmMessage: parked
+      ? 'I need a couple of details before I plan this.'
+      : `Plan ready — ${plan.tasks.length} agent step${plan.tasks.length === 1 ? '' : 's'}. Review and start when you're ready.`,
+    needsClarification: parked,
+    clarifyQuestions: opts.clarifyQuestions ?? [],
+    clarifyAnswers: opts.clarifyAnswers ?? [],
+    // The plan must be reviewed and approved by the user before any agent runs.
+    // A parked (clarifying) turn has no plan yet, so it isn't pending approval.
+    needsApproval: !parked,
+    approvalStatus: parked ? 'approved' : 'pending',
+    approvedAt: parked ? now : null,
     dispatchStatus: 'not_started',
     dispatchAdapter: null,
     dispatchedAt: null,
-    dispatchStage: 'queued',
+    dispatchStage: parked ? 'clarifying' : 'awaiting_approval',
     dispatchError: null,
     dispatchWorkspacePath: null,
     dispatch: [],
@@ -70,15 +147,41 @@ export async function createTurn(input: CreateTurnInput): Promise<TurnResponse> 
     workflowRun: null,
     error: null,
   };
+}
+
+/**
+ * Resume a clarification-parked turn: fold the user's choices into the goal,
+ * build the real plan, and replace the parked turn so it can be dispatched.
+ */
+export async function answerClarification(input: {
+  turnId: string;
+  answers: ClarifyAnswer[];
+  actor?: Actor | null | undefined;
+}): Promise<TurnResponse> {
+  const existing = await getTurn(input.turnId);
+  if (!existing) throw new ActionError('turn_not_found', 404);
+  if (!existing.needsClarification) throw new ActionError('turn_not_awaiting_clarification', 400);
+
+  const enrichedMessage = applyAnswers(existing.message, existing.clarifyQuestions, input.answers);
+  const now = nowIso();
+  const planned = buildTurn({
+    turnId: existing.id,
+    chatId: existing.localChatId,
+    ownerId: existing.ownerId,
+    message: enrichedMessage,
+    now,
+    clarifyAnswers: input.answers,
+  });
+  // Preserve the original user-facing message; keep the enriched text in the plan.
+  const turn: LocalTurn = { ...planned, message: existing.message, createdAt: existing.createdAt };
 
   await mutateData((data) => {
-    data.turns = [turn, ...data.turns.filter((item) => item.id !== turnId)];
-    if (chatId) {
-      upsertArtifacts(data.artifacts, artifacts);
-      data.handoffs.push(handoffForTurn(input.actor, chatId, turn));
+    data.turns = [turn, ...data.turns.filter((item) => item.id !== turn.id)];
+    if (turn.localChatId) {
+      upsertArtifacts(data.artifacts, turn.artifacts);
+      data.handoffs.push(handoffForTurn(input.actor, turn.localChatId, turn));
     }
   });
-
   return turnResponse(turn);
 }
 
@@ -118,6 +221,26 @@ export async function approveTurn(input: ApprovalInput): Promise<DispatchRespons
   }));
   const next = requireTurn(approved);
   if (input.autoDispatch) {
+    if (input.background) {
+      // Mark running now, run the DAG in the background, and return immediately.
+      // The client polls /history; per-task stageStates stream in as agents work.
+      const running = await updateTurn(next.id, (current) => ({
+        ...current,
+        dispatchStatus: 'running',
+        dispatchStage: 'dispatch',
+        dispatchError: null,
+      }));
+      void dispatchTurn({ turnId: next.id, agentAdapter: input.agentAdapter }).catch(async (error) => {
+        const message = error instanceof Error ? error.message : 'dispatch_failed';
+        await updateTurn(next.id, (current) => ({
+          ...current,
+          dispatchStatus: 'failed',
+          dispatchStage: 'failed',
+          dispatchError: message,
+        })).catch(() => {});
+      });
+      return dispatchResponse(requireTurn(running));
+    }
     return dispatchTurn({ turnId: next.id, agentAdapter: input.agentAdapter });
   }
   return dispatchResponse(next);
@@ -139,40 +262,192 @@ export async function dispatchTurn(input: DispatchInput): Promise<DispatchRespon
     dispatchWorkspacePath: workspace,
   }));
 
-  const records: DispatchRecord[] = [];
-  const artifacts: Artifact[] = [...turn.artifacts];
-  const handoffOutputs: string[] = [];
-  for (const task of turn.plan.tasks) {
-    const startedAt = nowIso();
-    const result = await runAgentTask({
-      adapter,
-      workspace,
-      task,
-      message: turn.message,
-      handoffContext: handoffOutputs.join('\n\n---\n\n') || undefined,
-    });
-    const finishedAt = nowIso();
-    records.push({
-      taskId: task.id,
-      agentId: task.assignee.replace('@', ''),
-      status: result.ok ? 'completed' : 'failed',
-      events: result.events,
-      startedAt,
-      finishedAt,
-      error: result.error,
-    });
-    artifacts.push(artifactFromRun(turn, task, result));
-    handoffOutputs.push([
-      `## ${task.title}`,
-      `Agent: ${task.owner ?? task.assignee}`,
-      result.text,
-    ].join('\n\n'));
-  }
+  // Per-task side data the scheduler's lean TaskResult doesn't carry: the agent
+  // event stream and the produced artifact, keyed by task id for later assembly.
+  const eventsByTask = new Map<string, AgentEvent[]>();
+  const artifactByTask = new Map<string, Artifact>();
 
-  const failed = records.some((record) => record.status === 'failed');
-  const workflowRun = workflowRunFor(turn.plan, failed);
+  const runTask = async (
+    task: PlanTask,
+    depOutputs: Record<string, { summary: string }>,
+  ): Promise<TaskResult> => {
+    const handoffContext = Object.entries(depOutputs)
+      .map(([depId, out]) => `## from ${depId}\n\n${out.summary}`)
+      .join('\n\n---\n\n') || undefined;
+
+    let result;
+    let fallbackNote: AgentEvent | null = null;
+    try {
+      result = await runAgentTask({ adapter, workspace, task, message: turn.message, handoffContext });
+    } catch (error) {
+      // Opt-in adapter unavailable (E2B / MiniMax / OpenAI-compatible): fall back
+      // to local-dispatch in this layer (not silently inside the adapter). The
+      // fallback is surfaced as an event on the task so a misconfig is visible
+      // in the UI, not hidden.
+      if (
+        error instanceof E2BUnavailableError
+        || error instanceof MiniMaxUnavailableError
+        || error instanceof OpenAICompatUnavailableError
+      ) {
+        fallbackNote = {
+          type: 'thinking_delta',
+          delta: `${error.name} (${error.message}); fell back to local-dispatch.`,
+        };
+        result = await runAgentTask({ adapter: 'local-dispatch', workspace, task, message: turn.message, handoffContext });
+      } else {
+        throw error;
+      }
+    }
+
+    eventsByTask.set(task.id, fallbackNote ? [fallbackNote, ...result.events] : result.events);
+    artifactByTask.set(task.id, artifactFromRun(turn, task, result));
+
+    if (!result.ok) {
+      return { ok: false, error: { message: result.error ?? 'agent_task_failed' } };
+    }
+
+    // Safety gate: a high-severity finding turns this task into an error, which
+    // the scheduler routes into the bounded review→fix loop via onFailure.
+    if (safetyEnabled()) {
+      const findings = scanArtifact(result.text);
+      if (hasBlockingFinding(findings)) {
+        return { ok: false, error: { message: 'safety_block', scan: findings } };
+      }
+    }
+
+    // The plan is now defined: once the planner finishes, the downstream tasks
+    // are no longer "awaiting plan" — give them concrete titles so the UI stops
+    // showing three placeholder rows that all looked the same.
+    if (task.role === 'planner') {
+      await retitleDownstreamTasks(turn.id, task.id, turn.message);
+    }
+
+    // Review gate: a reviewer that reports blocking (Critical/High) issues should
+    // trigger a fix, not silently end the run. Treat such a review as a failure
+    // so the scheduler derives a fixer via onFailure (bounded by maxFixRounds);
+    // the fixer receives this review as its repair context. A clean review passes.
+    if (task.role === 'reviewer' && reviewRequestsFix()) {
+      const severities = reviewSeverities(result.text);
+      if (severities.blocking > 0) {
+        return {
+          ok: false,
+          error: { message: `review_found_issues: ${severities.label}`, review: result.text },
+        };
+      }
+    }
+
+    return { ok: true, output: { summary: result.text, artifactId: artifactByTask.get(task.id)?.id } };
+  };
+
+  // Fixer tasks the scheduler derives at runtime, keyed by id, so onTaskState can
+  // fold them into the persisted plan as they start (the UI reads plan.tasks).
+  const derivedById = new Map<string, PlanTask>();
+
+  // Stream per-task progress into the turn's workflowRun.stageStates as each
+  // agent starts/finishes, so the polling UI can animate the roundtable (who's
+  // working right now) instead of jumping straight from "queued" to "done".
+  // onTaskState is awaited sequentially by the scheduler, so its store write does
+  // not race the final updateTurn (which only runs after the scheduler returns).
+  const schedulerToStage = { running: 'running', completed: 'done', failed: 'failed', blocked: 'blocked' } as const;
+  const onTaskState = async (taskId: string, status: 'running' | 'completed' | 'failed' | 'blocked') => {
+    const derived = derivedById.get(taskId);
+    await updateTurn(turn.id, (current) => {
+      const planHasTask = current.plan.tasks.some((task) => task.id === taskId);
+      const tasks = derived && !planHasTask
+        ? [...current.plan.tasks, derived]
+        : current.plan.tasks;
+      return {
+        ...current,
+        plan: { ...current.plan, tasks },
+        dispatchStage: status === 'running' ? `running:${taskId}` : current.dispatchStage,
+        workflowRun: {
+          ...(current.workflowRun ?? { stageStates: {} }),
+          stageStates: {
+            ...(current.workflowRun?.stageStates ?? {}),
+            [taskId]: { status: schedulerToStage[status] },
+          },
+        },
+      };
+    });
+  };
+
+  const run = await runScheduler({
+    tasks: turn.plan.tasks,
+    runTask,
+    maxFixRounds: maxFixRounds(),
+    now: nowIso,
+    onFailure: (failed, error) => {
+      const fixer = makeFixerTask(failed, error);
+      // Remember it so onTaskState can add it to the persisted plan when it runs
+      // (a concurrent write here would race the store's read-modify-write).
+      derivedById.set(fixer.id, fixer);
+      return fixer;
+    },
+    onTaskState,
+  });
+
+  // Assemble DispatchRecords from scheduler records, enriching with the captured
+  // agent events. Blocked tasks carry no events.
+  const records: DispatchRecord[] = run.records.map((record) => ({
+    taskId: record.taskId,
+    agentId: record.agentId,
+    status: record.status,
+    events: eventsByTask.get(record.taskId) ?? [],
+    startedAt: record.startedAt,
+    finishedAt: record.finishedAt,
+    error: record.error,
+    ...(record.producedFor !== undefined ? { producedFor: record.producedFor } : {}),
+    ...(record.fixRound !== undefined ? { fixRound: record.fixRound } : {}),
+  }));
+
+  const artifacts: Artifact[] = [
+    ...turn.artifacts,
+    ...run.tasks
+      .map((task) => artifactByTask.get(task.id))
+      .filter((artifact): artifact is Artifact => artifact !== undefined),
+  ];
+
+  // A failed task is "repaired" if a fixer in its lineage completed. Walk the
+  // producedFor chain from every completed fixer back to the originally failed
+  // task so a successful fix doesn't leave the whole run marked failed.
+  const taskById = new Map(run.tasks.map((task) => [task.id, task]));
+  const repaired = new Set<string>();
+  for (const task of run.tasks) {
+    if (task.status !== 'completed' || task.producedFor === undefined) continue;
+    let cursor: string | undefined = task.producedFor;
+    while (cursor) {
+      repaired.add(cursor);
+      cursor = taskById.get(cursor)?.producedFor;
+    }
+  }
+  // The run failed only if a task ended failed/blocked AND was not repaired.
+  const failed = run.tasks.some(
+    (task) => (task.status === 'failed' || task.status === 'blocked') && !repaired.has(task.id),
+  );
+  const workflowRun = workflowRunFromTasks(run.tasks);
+  // Persist any fixer tasks the scheduler derived at runtime back into the plan,
+  // so the UI (roundtable + todo list, which read plan.tasks) shows the fix pass
+  // — front and back stay in sync on the real executed graph.
+  const plannedIds = new Set(turn.plan.tasks.map((task) => task.id));
+  const derivedTasks: PlanTask[] = run.tasks
+    .filter((task) => !plannedIds.has(task.id))
+    .map((task) => ({
+      id: task.id,
+      title: task.title,
+      assignee: task.assignee,
+      owner: task.owner,
+      role: task.role,
+      brief: task.brief,
+      deps: task.deps,
+      parallel: task.parallel,
+      ...(task.producedFor !== undefined ? { producedFor: task.producedFor } : {}),
+      ...(task.fixRound !== undefined ? { fixRound: task.fixRound } : {}),
+    }));
   const completed = await updateTurn(turn.id, (current) => ({
     ...current,
+    plan: derivedTasks.length > 0
+      ? { ...current.plan, tasks: [...current.plan.tasks, ...derivedTasks] }
+      : current.plan,
     dispatchStatus: failed ? 'failed' : 'completed',
     dispatchAdapter: adapter,
     dispatchedAt: nowIso(),
@@ -212,9 +487,13 @@ function turnResponse(turn: LocalTurn) {
     provider: turn.provider,
     model: turn.model,
     pmMessage: turn.pmMessage,
+    needsClarification: turn.needsClarification,
+    clarifyQuestions: turn.clarifyQuestions,
+    clarifyAnswers: turn.clarifyAnswers,
     needsApproval: turn.needsApproval,
     approvalStatus: turn.approvalStatus,
     dispatchStatus: turn.dispatchStatus,
+    dispatchStage: turn.dispatchStage,
     artifacts: turn.artifacts,
     intake: turn.intake,
     plan: turn.plan,
@@ -347,6 +626,55 @@ function taskForAgent(
   };
 }
 
+// Concrete title for a downstream task AFTER the planner has run. At this point
+// the plan defines the work, so naming the goal is accurate (not a guess). Used
+// by retitleDownstreamTasks() to replace the "awaiting plan" placeholders.
+function plannedTitleForRole(role: string | undefined, displayName: string, goal: string): string {
+  if (role === 'pm') return `Product brief for ${goal}`;
+  if (role === 'architect') return `Architecture for ${goal}`;
+  if (role === 'implementer') return `Build ${goal} (${displayName})`;
+  if (role === 'reviewer') return `Review ${goal}`;
+  if (role === 'fixer') return `Fix issues for ${goal}`;
+  return `Plan ${goal}`;
+}
+
+// Once the planner task completes, rewrite every task that (transitively)
+// depends on it from its placeholder title to a concrete one. The plan now
+// exists, so the downstream tasks have a real, named scope.
+async function retitleDownstreamTasks(turnId: string, plannerTaskId: string, message: string): Promise<void> {
+  const goal = compactTitle(messageWithoutMentions(message) || message);
+  await updateTurn(turnId, (current) => {
+    const tasks = current.plan.tasks;
+    // Build the set of tasks reachable from the planner via deps.
+    const downstream = new Set<string>();
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const task of tasks) {
+        if (downstream.has(task.id)) continue;
+        if (task.deps.includes(plannerTaskId) || task.deps.some((dep) => downstream.has(dep))) {
+          downstream.add(task.id);
+          changed = true;
+        }
+      }
+    }
+    if (downstream.size === 0) return current;
+    const ownerName = (task: PlanTask): string =>
+      AGENT_ROSTER.find((agent) => agent.id === task.owner)?.displayName ?? task.owner ?? task.role ?? 'agent';
+    return {
+      ...current,
+      plan: {
+        ...current.plan,
+        tasks: tasks.map((task) =>
+          downstream.has(task.id)
+            ? { ...task, title: plannedTitleForRole(task.role, ownerName(task), goal) }
+            : task,
+        ),
+      },
+    };
+  });
+}
+
 function planner(): AgentProfile {
   return AGENT_ROSTER.find((agent) => agent.role === 'planner') ?? AGENT_ROSTER[0]!;
 }
@@ -364,12 +692,18 @@ function implementerForMessage(message: string): AgentProfile {
     ?? planner();
 }
 
+// Title for a task at PLAN TIME — before the planner has run. Only the planner
+// itself knows the concrete goal up front; every downstream task is still
+// undefined (its real scope is decided once the plan lands), so we show a
+// responsibility placeholder, NOT the user's raw request. dispatchTurn() later
+// rewrites these from the planner's actual output via retitleDownstreamTasks().
 function titleForAgent(agent: AgentProfile, base: string): string {
-  if (agent.role === 'pm') return `Define product brief for ${base}`;
-  if (agent.role === 'architect') return `Design architecture for ${base}`;
-  if (agent.role === 'implementer') return `Build ${base} (${agent.displayName})`;
-  if (agent.role === 'reviewer') return `Review ${base}`;
-  if (agent.role === 'fixer') return `Fix issues for ${base}`;
+  if (agent.role === 'planner') return `Plan ${base}`;
+  if (agent.role === 'pm') return 'Product brief · awaiting plan';
+  if (agent.role === 'architect') return 'Architecture · awaiting plan';
+  if (agent.role === 'implementer') return `Build · awaiting plan (${agent.displayName})`;
+  if (agent.role === 'reviewer') return 'Review · awaits the build';
+  if (agent.role === 'fixer') return 'Fix issues · awaits review';
   return `Plan ${base}`;
 }
 
@@ -432,12 +766,26 @@ async function prepareWorkspace(turn: LocalTurn): Promise<string> {
   const projectWorkspace = await workspaceFromChat(turn.localChatId);
   if (projectWorkspace) {
     await mkdir(projectWorkspace, { recursive: true });
+    await clearRunOutput(projectWorkspace);
     return projectWorkspace;
   }
   const root = resolve(process.env.ROUNDTABLE_WORKSPACE_ROOT || '.roundtable/workspaces');
   const workspace = resolve(root, turn.localChatId ?? turn.id);
   await mkdir(workspace, { recursive: true });
+  await clearRunOutput(workspace);
   return workspace;
+}
+
+// Wipe this system's own output tree (.roundtable/runs) before a run so a
+// re-dispatch — or a different request in the same chat — doesn't leave stale
+// artifacts from the previous run mixed in with the new ones. Only the runs/
+// subtree is removed; any real project files in the workspace are untouched.
+async function clearRunOutput(workspace: string): Promise<void> {
+  try {
+    await rm(join(workspace, '.roundtable', 'runs'), { recursive: true, force: true });
+  } catch {
+    // Best-effort: a missing dir or transient FS error must not block the run.
+  }
 }
 
 async function workspaceFromChat(chatId: string | null): Promise<string | null> {
@@ -450,11 +798,79 @@ async function workspaceFromChat(chatId: string | null): Promise<string | null> 
   return resolve(workbench.workspacePath);
 }
 
-function workflowRunFor(plan: Plan, failed: boolean): WorkflowRun {
+// Map the scheduler's per-task status onto the WorkflowRun shape the UI reads.
+function workflowRunFromTasks(tasks: ScheduledTask[]): WorkflowRun {
+  const map: Record<string, 'pending' | 'running' | 'done' | 'blocked' | 'failed'> = {
+    completed: 'done',
+    failed: 'failed',
+    blocked: 'blocked',
+    running: 'running',
+    pending: 'pending',
+  };
   return {
     stageStates: Object.fromEntries(
-      plan.tasks.map((task) => [task.id, { status: failed ? 'blocked' : 'done' }]),
+      tasks.map((task) => [task.id, { status: map[task.status] ?? 'pending' }]),
     ),
+  };
+}
+
+function maxFixRounds(): number {
+  const parsed = Number(process.env.ROUNDTABLE_MAX_FIX_ROUNDS);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 2;
+}
+
+// Whether a reviewer that reports blocking issues should trigger a fix pass.
+// On by default; set ROUNDTABLE_REVIEW_TRIGGERS_FIX=false to disable.
+function reviewRequestsFix(): boolean {
+  return process.env.ROUNDTABLE_REVIEW_TRIGGERS_FIX !== 'false';
+}
+
+// Parse a reviewer's Markdown report for severity signals. Counts Critical/High
+// (blocking) mentions across EN + 中文 wording. Heuristic by design: reviewers
+// write prose, and a count > 0 is enough to decide "this needs a fix pass".
+export function reviewSeverities(report: string): { blocking: number; label: string } {
+  const critical = countMatches(report, /\b(critical|blocker|severe)\b|🔴|严重|致命|阻断/gi);
+  const high = countMatches(report, /\bhigh\b|🟠|高危|高优先级/gi);
+  // "If it is solid, say so" — an explicit all-clear shouldn't trigger a fix.
+  const allClear = /\b(no (issues|blockers)|looks good|lgtm|ship it|solid)\b|没有(发现)?问题|可以(直接)?交付|无明显问题/i.test(report);
+  const blocking = allClear ? 0 : critical + high;
+  const label = `${critical} critical · ${high} high`;
+  return { blocking, label };
+}
+
+function countMatches(text: string, re: RegExp): number {
+  return (text.match(re) || []).length;
+}
+
+// Derive a fixer task when a task fails (agent error or blocking safety finding).
+// The scheduler wires deps + lineage; we only define what the fixer should do.
+function makeFixerTask(
+  failed: ScheduledTask,
+  error: { message: string; scan?: SafetyFinding[] | undefined; review?: string | undefined },
+): PlanTask {
+  const fixer = AGENT_ROSTER.find((agent) => agent.role === 'fixer') ?? AGENT_ROSTER[0]!;
+  const round = (failed.fixRound ?? 0) + 1;
+  const fromReview = failed.role === 'reviewer';
+  const findingsText = error.scan && error.scan.length > 0
+    ? `\n\nSafety findings:\n${describeFindings(error.scan)}`
+    : '';
+  const reviewText = error.review ? `\n\nReview report to address:\n\n${error.review}` : '';
+  return {
+    id: `fix_${failed.id}_r${round}`,
+    // A review-driven fix reads better as "Apply review fixes" than "Fix Review …".
+    title: fromReview ? `Apply review fixes (round ${round})` : `Fix ${failed.title}`,
+    assignee: fixer.assignee,
+    owner: fixer.id,
+    role: fixer.role,
+    brief: fromReview
+      ? `The reviewer found blocking issues (${error.message}). Apply focused fixes to the `
+        + `implementer's deliverable so each Critical/High issue is resolved, and output the `
+        + `corrected deliverable plus a short summary of what changed.${reviewText}`
+      : `Repair the failure from "${failed.title}" (${failed.id}). `
+        + `Error: ${error.message}.${findingsText}${reviewText}\n\n`
+        + `Apply a focused fix and summarize the changed files.`,
+    deps: [failed.id],
+    parallel: false,
   };
 }
 
@@ -491,7 +907,22 @@ function upsertArtifacts(target: Artifact[], artifacts: Artifact[]): void {
 }
 
 function compactTitle(message: string): string {
-  return message.replace(/\s+/g, ' ').trim().slice(0, 120) || 'Roundtable task';
+  // Titles should read as the core ask, not the whole enriched goal. Drop the
+  // clarification block appended by applyAnswers() ("...\n\nClarified
+  // requirements:\n- ...") so Plan/Build/Review titles don't all repeat the same
+  // long string. The full enriched text still lives in each task's brief.
+  const core = stripClarification(message);
+  return core.replace(/\s+/g, ' ').trim().slice(0, 80) || 'Roundtable task';
+}
+
+// Mirror of applyAnswers()'s appended block ("\n\nClarified requirements:\n…").
+// Whitespace-tolerant: by the time a title is built the goal may have had its
+// newlines collapsed to single spaces, so match either form. Keep the marker
+// text in sync with clarify-actions.ts applyAnswers().
+const CLARIFICATION_MARKER = /\s*Clarified requirements:[\s\S]*$/;
+
+function stripClarification(message: string): string {
+  return message.replace(CLARIFICATION_MARKER, '');
 }
 
 export class ActionError extends Error {
