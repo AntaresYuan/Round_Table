@@ -88,6 +88,13 @@ export type PlanTask = {
   brief: string;
   deps: string[];
   parallel: boolean;
+  // Optional scheduler hints. `priority` orders tasks inside a single wave
+  // (lower first). `producedFor`/`fixRound` are only set on fixer tasks the
+  // scheduler derives when an upstream task fails — they record which task is
+  // being repaired and how many fix attempts have run for that branch.
+  priority?: number | undefined;
+  producedFor?: string | undefined;
+  fixRound?: number | undefined;
 };
 
 export type Plan = {
@@ -107,15 +114,25 @@ export type AgentEvent =
 export type DispatchRecord = {
   taskId: string;
   agentId: string;
-  status: 'pending' | 'running' | 'completed' | 'failed';
+  // 'blocked' is added for the DAG scheduler: a task whose (transitive) deps
+  // failed is never executed and is recorded as blocked. Existing values are
+  // kept unchanged so the UI status mapping (completed/failed/...) still works.
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'blocked';
   events: AgentEvent[];
   startedAt: string;
   finishedAt: string | null;
   error: string | null;
+  // Set on fixer records derived by the scheduler: which task produced this
+  // fix attempt, and how many fix rounds had run for that branch.
+  producedFor?: string | undefined;
+  fixRound?: number | undefined;
 };
 
 export type WorkflowRun = {
-  stageStates: Record<string, { status: 'pending' | 'running' | 'done' | 'blocked' }>;
+  // Per-task state keyed by task id. 'failed' is added so a per-task DAG run can
+  // distinguish a task that errored from one that was blocked by an upstream
+  // failure; the UI's STAGE_STATUS_STYLE already renders all of these.
+  stageStates: Record<string, { status: 'pending' | 'running' | 'done' | 'blocked' | 'failed' }>;
 };
 
 export type LocalTurn = {
