@@ -14,6 +14,11 @@ export async function POST(req: Request) {
     const body = BodySchema.parse(await req.json());
     const actor = await routeActor();
     const turn = await createTurn({ ...body, actor });
+    // Parked for clarification — return the questions and wait for the user's
+    // answers (POST /clarify) before any planning or dispatch happens.
+    if (turn.needsClarification) {
+      return Response.json(turn);
+    }
     const dispatch = await dispatchTurn({ turnId: turn.id, agentAdapter: body.agentAdapter });
     return Response.json({
       ...turn,

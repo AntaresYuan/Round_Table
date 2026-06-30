@@ -427,6 +427,75 @@ const STAGE_STATUS_STYLE = {
   pending: { color: 'var(--text-faint)', label: 'pending' },
 };
 
+// The planner needs more detail before it can build. Render its questions as
+// pick-one cards — a nocode user just clicks an option per question, then submits.
+function ClarifyCard({ turn, onSubmit }) {
+  const questions = turn.result?.clarifyQuestions || [];
+  const [picks, setPicks] = useState({});
+  const submitting = turn.clarifying;
+  const allAnswered = questions.length > 0 && questions.every((q) => picks[q.id]);
+  const submit = () => {
+    if (!allAnswered || submitting) return;
+    const answers = questions.map((q) => {
+      const opt = q.options.find((o) => o.id === picks[q.id]);
+      return { questionId: q.id, optionId: picks[q.id], label: opt?.label || picks[q.id] };
+    });
+    onSubmit(answers);
+  };
+  return (
+    <div className="rt-rise" style={{ marginTop: 4, border: '1px solid var(--border)',
+      borderLeft: '3px solid var(--accent)', borderRadius: 'var(--r-card)', background: 'var(--surface)',
+      boxShadow: 'var(--shadow-card)', overflow: 'hidden' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '12px 14px', borderBottom: '1px solid var(--border)' }}>
+        <Icon name="layers" size={15} style={{ color: 'var(--accent)' }} />
+        <div style={{ fontWeight: 700, fontSize: 13.5, color: 'var(--text)' }}>A few quick questions before we build</div>
+      </div>
+      <div style={{ padding: '12px 14px', display: 'grid', gap: 16 }}>
+        {questions.map((q) => (
+          <div key={q.id} style={{ display: 'grid', gap: 8 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{q.question}</div>
+            <div style={{ display: 'grid', gap: 7 }}>
+              {q.options.map((opt) => {
+                const active = picks[q.id] === opt.id;
+                return (
+                  <button key={opt.id} onClick={() => setPicks((p) => ({ ...p, [q.id]: opt.id }))}
+                    disabled={submitting}
+                    style={{ textAlign: 'left', display: 'grid', gap: 2, padding: '9px 12px', cursor: submitting ? 'default' : 'pointer',
+                      borderRadius: 'var(--r-sm)', font: 'inherit',
+                      border: `1px solid ${active ? 'var(--accent)' : 'var(--border)'}`,
+                      background: active ? alpha('var(--accent)', 10) : 'var(--surface-2)',
+                      color: 'var(--text)' }}>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 13, fontWeight: 600 }}>
+                      <span style={{ width: 14, height: 14, borderRadius: '50%', flexShrink: 0,
+                        border: `2px solid ${active ? 'var(--accent)' : 'var(--text-faint)'}`,
+                        background: active ? 'var(--accent)' : 'transparent', boxShadow: active ? 'inset 0 0 0 2px var(--surface)' : 'none' }} />
+                      {opt.label}
+                    </span>
+                    {opt.description && (
+                      <span style={{ fontSize: 11.5, color: 'var(--text-muted)', marginLeft: 21, lineHeight: 1.4 }}>{opt.description}</span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+        {turn.clarifyError && (
+          <div style={{ fontSize: 12, color: 'var(--bad)' }}>{turn.clarifyError}</div>
+        )}
+        <button onClick={submit} disabled={!allAnswered || submitting}
+          style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 7, padding: '10px 14px',
+            borderRadius: 'var(--r-sm)', border: 'none', font: 'inherit', fontSize: 13, fontWeight: 600,
+            cursor: !allAnswered || submitting ? 'default' : 'pointer',
+            background: !allAnswered || submitting ? 'var(--surface-3)' : 'var(--accent)',
+            color: !allAnswered || submitting ? 'var(--text-faint)' : '#fff' }}>
+          {submitting ? <><Spinner size={13} color="var(--text-faint)" /> Planning…</> : <><Icon name="check" size={14} /> Start building</>}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function LocalLiveTurn({ turn, agents, turnActions, showPreview }) {
   const completed = turn.result?.dispatchStatus === 'completed';
   const failed = turn.result?.dispatchStatus === 'failed';
@@ -456,7 +525,13 @@ function LocalLiveTurn({ turn, agents, turnActions, showPreview }) {
               {turn.error}
             </div>
           )}
-          {turn.result && (
+          {turn.result?.needsClarification && (
+            <ClarifyCard
+              turn={turn}
+              onSubmit={(answers) => turnActions?.clarify && turnActions.clarify(turn.id, answers)}
+            />
+          )}
+          {turn.result && !turn.result.needsClarification && (
             <div style={{ color: 'var(--text-muted)', fontSize: 13.5, lineHeight: 1.55 }}>
               <AgentChainCard
                 plan={turn.result.plan}
@@ -1699,6 +1774,9 @@ function storedTurnToLiveTurn(turn) {
             plan: turn.plan,
             workflow: turn.workflow,
             workflowRun: turn.workflowRun,
+            needsClarification: turn.needsClarification,
+            clarifyQuestions: turn.clarifyQuestions,
+            clarifyAnswers: turn.clarifyAnswers,
           },
         }
       : { error: turn.error || 'orchestrator_turn_failed' }),
@@ -2400,6 +2478,48 @@ function App() {
       setLocalStatus('error');
     }
   };
+  // The planner parked this turn with clarifying questions; send the user's
+  // picks, then auto-dispatch the now-planned turn so the table starts working.
+  const answerLocalClarification = async (turnId, answers) => {
+    setLocalTurns((turns) => turns.map((turn) => (
+      turn.id === turnId ? { ...turn, clarifying: true, clarifyError: null } : turn
+    )));
+    try {
+      const res = await fetch('/api/orchestrator/clarify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ turnId, answers }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || 'clarify_failed');
+      // Replace the parked turn with the planned one, then dispatch it.
+      setLocalTurns((turns) => turns.map((turn) => (
+        turn.id === turnId
+          ? { ...turn, clarifying: false, status: 'done', result: data }
+          : turn
+      )));
+      await sendDispatch(turnId);
+    } catch (error) {
+      const errorText = error instanceof Error ? error.message : 'clarify_failed';
+      setLocalTurns((turns) => turns.map((turn) => (
+        turn.id === turnId ? { ...turn, clarifying: false, clarifyError: errorText } : turn
+      )));
+    }
+  };
+  // Kick off dispatch for an already-planned (approved) turn and poll for results.
+  const sendDispatch = async (turnId) => {
+    try {
+      const res = await fetch('/api/orchestrator/dispatch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ turnId, ...preferredAgentAdapterRequest() }),
+      });
+      const data = await res.json();
+      if (res.ok && data.ok) loadLocalHistory();
+    } catch {
+      loadLocalHistory();
+    }
+  };
   const approveLocalTurn = async (turnId) => {
     setLocalTurns((turns) => turns.map((turn) => (
       turn.id === turnId ? { ...turn, approving: true, approvalError: null } : turn
@@ -2640,7 +2760,7 @@ function App() {
                   agents={agents} scene={scene} live={authed && !!activeChatId} liveArtifacts={liveArtifacts} liveMessages={liveMessages}
                   liveHandoffs={liveHandoffs} activeChatId={activeChatId} memory={memory}
                   localTurns={activeLocalTurns.length ? activeLocalTurns : localTurns} localStatus={localStatus} onApproveLocalTurn={approveLocalTurn}
-                  localTurnActions={{ interrupt: interruptLocalTurn, redispatch: redispatchLocalTurn, discard: discardLocalTurn }}
+                  localTurnActions={{ interrupt: interruptLocalTurn, redispatch: redispatchLocalTurn, discard: discardLocalTurn, clarify: answerLocalClarification }}
                   onOpenArtifact={setDrawerArt} onAction={onAction} onClose={() => setNotesOpen(false)}
                   onRewrite={sendComposerMessage} />}
               </div>
