@@ -1,0 +1,137 @@
+/* ============================================================================
+   Roundtable — live-scene.js
+   Data assembly for the live (real-model) run: pick the latest turn, fold its
+   artifacts into the gallery shape, and project a turn onto the roundtable
+   scene (per-agent status + dependency-arrow task states). Pure functions,
+   extracted from app-root.jsx so the App shell and the inspector group share one
+   source of truth.
+   ============================================================================ */
+
+import { RT } from './rt';
+import { agentForArtifact } from './agent-utils';
+
+function latestLiveTurn(liveTurns) {
+  const turns = (liveTurns || []).filter((turn) => turn.result || turn.status === 'pending' || turn.status === 'error');
+  if (turns.length === 0) return null;
+  const timeOf = (turn) => {
+    const fromCreatedAt = turn.createdAt ? Date.parse(turn.createdAt) : NaN;
+    if (!Number.isNaN(fromCreatedAt)) return fromCreatedAt;
+    const fromId = /^live-(\d+)$/.exec(turn.id);
+    return fromId ? Number(fromId[1]) : 0;
+  };
+  return [...turns].sort((a, b) => timeOf(b) - timeOf(a))[0];
+}
+
+function livePlanArtifact(liveTurns, liveStatus) {
+  return {
+    id: 'live-code-log',
+    kind: 'code',
+    title: 'roundtable-live-run.json',
+    ownerAgentId: 'orchestrator',
+    version: 1,
+    source: 'generated',
+    createdAt: new Date().toISOString(),
+    code: JSON.stringify({
+      server: {
+        status: 'running',
+        url: 'http://localhost:3000',
+        currentUiStatus: liveStatus,
+      },
+      turns: (liveTurns || []).map((turn) => ({
+        id: turn.id,
+        createdAt: turn.createdAt,
+        status: turn.status,
+        approvalStatus: turn.result?.approvalStatus,
+        dispatchStatus: turn.result?.dispatchStatus,
+        dispatchAdapter: turn.result?.dispatchAdapter,
+        artifactCount: turn.result?.artifacts?.length || 0,
+        workspacePath: turn.result?.dispatchWorkspacePath,
+        taskCount: turn.result?.plan?.tasks?.length || 0,
+        message: turn.message,
+        error: turn.error,
+        plan: turn.result?.plan,
+      })),
+    }, null, 2),
+  };
+}
+
+function normalizeLiveArtifacts(artifacts, agents) {
+  return (artifacts || []).map((artifact) => {
+    const owner = agentForArtifact(artifact, agents);
+    return {
+      ...artifact,
+      ownerAgentId: owner.agentId,
+      source: 'generated',
+      code: artifact.kind === 'code' ? artifact.preview : undefined,
+      preview: artifact.preview || '',
+    };
+  });
+}
+
+function liveArtifactsFromTurns(liveTurns, agents, liveStatus) {
+  const turns = liveTurns || [];
+  return [
+    ...(turns.length > 0 ? [livePlanArtifact(turns, liveStatus)] : []),
+    ...turns.flatMap((turn) => normalizeLiveArtifacts(turn.result?.artifacts || [], agents)),
+  ];
+}
+
+function buildLocalScene(baseScene, liveTurns, agents) {
+  const latest = latestLiveTurn(liveTurns);
+  if (!latest) return baseScene;
+  const status = { ...baseScene.status };
+  Object.keys(status).forEach((id) => { status[id] = 'idle'; });
+  const result = latest.result;
+  const completed = result?.dispatchStatus === 'completed';
+  status.orchestrator = latest.status === 'pending' ? 'working' : result ? 'done' : 'idle';
+
+  const roleCursor = {};
+  const ownerFor = (task) => {
+    if (task?.owner && agents[task.owner]) return agents[task.owner];
+    const target = String(task?.assignee || '').replace(/^@/, '');
+    if (agents[target]) return agents[target];
+    const candidates = Object.values(agents).filter((agent) => agent.role === target && !agent.pm);
+    if (candidates.length === 0) return agents.orchestrator;
+    const index = roleCursor[target] || 0;
+    roleCursor[target] = index + 1;
+    return candidates[index % candidates.length];
+  };
+  // Per-task status from the backend's workflowRun.stageStates, so dependency
+  // arrows on the table appear as each task finishes — not all at once.
+  const stageStates = result?.workflowRun?.stageStates || {};
+  const stageToTaskStatus = { done: 'completed', failed: 'failed', blocked: 'blocked', running: 'running', pending: 'pending' };
+  const liveTasks = result?.plan?.tasks?.map((task) => {
+    const owner = ownerFor(task);
+    const stageStatus = stageStates[task.id]?.status;
+    const taskStatus = stageStatus
+      ? (stageToTaskStatus[stageStatus] || 'pending')
+      : (completed ? 'completed' : result?.dispatchStatus === 'running' ? 'running' : 'pending');
+    status[owner.agentId] = taskStatus === 'completed' ? 'done' : taskStatus === 'running' ? 'working' : 'idle';
+    return { ...task, owner: owner.agentId, status: taskStatus };
+  }) || [];
+
+  return {
+    ...baseScene,
+    live: true,
+    started: true,
+    planPosted: true,
+    run: {
+      phase: latest.status === 'pending' ? 'planning' : completed ? 'completed' : 'running',
+      message: latest.message,
+      error: latest.error,
+      provider: result?.provider,
+      model: result?.model,
+      dispatchStatus: result?.dispatchStatus,
+      artifactCount: result?.artifacts?.length || 0,
+      workspacePath: result?.dispatchWorkspacePath,
+    },
+    status,
+    tasks: liveTasks,
+    placed: result?.plan ? liveArtifactsFromTurns([latest], agents, 'idle').map((art) => ({
+      art,
+      ownerAgentId: art.ownerAgentId,
+    })) : [],
+  };
+}
+
+export { latestLiveTurn, livePlanArtifact, normalizeLiveArtifacts, liveArtifactsFromTurns, buildLocalScene };
