@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { id, mutateData, nowIso, readData } from '../store.js';
 import type {
   Actor,
+  AgentEvent,
   Artifact,
   DispatchRecord,
   Handoff,
@@ -13,6 +14,13 @@ import type {
   WorkflowRun,
 } from '../types.js';
 import { runAgentTask, normalizeAdapter } from './agent-runner.js';
+import { E2BUnavailableError } from './adapters/e2b-adapter.js';
+import {
+  runScheduler,
+  type ScheduledTask,
+  type TaskResult,
+} from './scheduler.js';
+import { describeFindings, hasBlockingFinding, safetyEnabled, scanArtifact, type SafetyFinding } from './safety.js';
 import { AGENT_ROSTER, mentionedAgents, mentionTokens, messageWithoutMentions, type AgentProfile } from './agent-roster.js';
 
 export type CreateTurnInput = {
@@ -139,38 +147,85 @@ export async function dispatchTurn(input: DispatchInput): Promise<DispatchRespon
     dispatchWorkspacePath: workspace,
   }));
 
-  const records: DispatchRecord[] = [];
-  const artifacts: Artifact[] = [...turn.artifacts];
-  const handoffOutputs: string[] = [];
-  for (const task of turn.plan.tasks) {
-    const startedAt = nowIso();
-    const result = await runAgentTask({
-      adapter,
-      workspace,
-      task,
-      message: turn.message,
-      handoffContext: handoffOutputs.join('\n\n---\n\n') || undefined,
-    });
-    const finishedAt = nowIso();
-    records.push({
-      taskId: task.id,
-      agentId: task.assignee.replace('@', ''),
-      status: result.ok ? 'completed' : 'failed',
-      events: result.events,
-      startedAt,
-      finishedAt,
-      error: result.error,
-    });
-    artifacts.push(artifactFromRun(turn, task, result));
-    handoffOutputs.push([
-      `## ${task.title}`,
-      `Agent: ${task.owner ?? task.assignee}`,
-      result.text,
-    ].join('\n\n'));
-  }
+  // Per-task side data the scheduler's lean TaskResult doesn't carry: the agent
+  // event stream and the produced artifact, keyed by task id for later assembly.
+  const eventsByTask = new Map<string, AgentEvent[]>();
+  const artifactByTask = new Map<string, Artifact>();
 
-  const failed = records.some((record) => record.status === 'failed');
-  const workflowRun = workflowRunFor(turn.plan, failed);
+  const runTask = async (
+    task: PlanTask,
+    depOutputs: Record<string, { summary: string }>,
+  ): Promise<TaskResult> => {
+    const handoffContext = Object.entries(depOutputs)
+      .map(([depId, out]) => `## from ${depId}\n\n${out.summary}`)
+      .join('\n\n---\n\n') || undefined;
+
+    let result;
+    try {
+      result = await runAgentTask({ adapter, workspace, task, message: turn.message, handoffContext });
+    } catch (error) {
+      // E2B opt-in: if the sandbox is unavailable, fall back to local-dispatch in
+      // this layer (not silently inside the adapter) so a misconfig is logged but
+      // the run still completes.
+      if (error instanceof E2BUnavailableError) {
+        console.warn(`E2B unavailable, falling back to local-dispatch for ${task.id}: ${error.message}`);
+        result = await runAgentTask({ adapter: 'local-dispatch', workspace, task, message: turn.message, handoffContext });
+      } else {
+        throw error;
+      }
+    }
+
+    eventsByTask.set(task.id, result.events);
+    artifactByTask.set(task.id, artifactFromRun(turn, task, result));
+
+    if (!result.ok) {
+      return { ok: false, error: { message: result.error ?? 'agent_task_failed' } };
+    }
+
+    // Safety gate: a high-severity finding turns this task into an error, which
+    // the scheduler routes into the bounded review→fix loop via onFailure.
+    if (safetyEnabled()) {
+      const findings = scanArtifact(result.text);
+      if (hasBlockingFinding(findings)) {
+        return { ok: false, error: { message: 'safety_block', scan: findings } };
+      }
+    }
+
+    return { ok: true, output: { summary: result.text, artifactId: artifactByTask.get(task.id)?.id } };
+  };
+
+  const run = await runScheduler({
+    tasks: turn.plan.tasks,
+    runTask,
+    maxFixRounds: maxFixRounds(),
+    now: nowIso,
+    onFailure: (failed, error) => makeFixerTask(failed, error),
+  });
+
+  // Assemble DispatchRecords from scheduler records, enriching with the captured
+  // agent events. Blocked tasks carry no events.
+  const records: DispatchRecord[] = run.records.map((record) => ({
+    taskId: record.taskId,
+    agentId: record.agentId,
+    status: record.status,
+    events: eventsByTask.get(record.taskId) ?? [],
+    startedAt: record.startedAt,
+    finishedAt: record.finishedAt,
+    error: record.error,
+    ...(record.producedFor !== undefined ? { producedFor: record.producedFor } : {}),
+    ...(record.fixRound !== undefined ? { fixRound: record.fixRound } : {}),
+  }));
+
+  const artifacts: Artifact[] = [
+    ...turn.artifacts,
+    ...run.tasks
+      .map((task) => artifactByTask.get(task.id))
+      .filter((artifact): artifact is Artifact => artifact !== undefined),
+  ];
+
+  // The run failed only if a task ended failed/blocked with no successful repair.
+  const failed = run.tasks.some((task) => task.status === 'failed' || task.status === 'blocked');
+  const workflowRun = workflowRunFromTasks(run.tasks);
   const completed = await updateTurn(turn.id, (current) => ({
     ...current,
     dispatchStatus: failed ? 'failed' : 'completed',
@@ -450,11 +505,50 @@ async function workspaceFromChat(chatId: string | null): Promise<string | null> 
   return resolve(workbench.workspacePath);
 }
 
-function workflowRunFor(plan: Plan, failed: boolean): WorkflowRun {
+// Map the scheduler's per-task status onto the WorkflowRun shape the UI reads.
+function workflowRunFromTasks(tasks: ScheduledTask[]): WorkflowRun {
+  const map: Record<string, 'pending' | 'running' | 'done' | 'blocked' | 'failed'> = {
+    completed: 'done',
+    failed: 'failed',
+    blocked: 'blocked',
+    running: 'running',
+    pending: 'pending',
+  };
   return {
     stageStates: Object.fromEntries(
-      plan.tasks.map((task) => [task.id, { status: failed ? 'blocked' : 'done' }]),
+      tasks.map((task) => [task.id, { status: map[task.status] ?? 'pending' }]),
     ),
+  };
+}
+
+function maxFixRounds(): number {
+  const parsed = Number(process.env.ROUNDTABLE_MAX_FIX_ROUNDS);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 2;
+}
+
+// Derive a fixer task when a task fails (agent error or blocking safety finding).
+// The scheduler wires deps + lineage; we only define what the fixer should do.
+function makeFixerTask(
+  failed: ScheduledTask,
+  error: { message: string; scan?: SafetyFinding[] | undefined },
+): PlanTask {
+  const fixer = AGENT_ROSTER.find((agent) => agent.role === 'fixer') ?? AGENT_ROSTER[0]!;
+  const round = (failed.fixRound ?? 0) + 1;
+  const findingsText = error.scan && error.scan.length > 0
+    ? `\n\nSafety findings:\n${describeFindings(error.scan)}`
+    : '';
+  return {
+    id: `fix_${failed.id}_r${round}`,
+    title: `Fix ${failed.title}`,
+    assignee: fixer.assignee,
+    owner: fixer.id,
+    role: fixer.role,
+    brief:
+      `Repair the failure from "${failed.title}" (${failed.id}). `
+      + `Error: ${error.message}.${findingsText}\n\n`
+      + `Apply a focused fix and summarize the changed files.`,
+    deps: [failed.id],
+    parallel: false,
   };
 }
 

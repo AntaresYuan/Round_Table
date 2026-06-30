@@ -3,6 +3,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { AgentEvent, ArtifactKind, PlanTask } from '../types.js';
 import { agentForTask, type AgentProfile } from './agent-roster.js';
+import { runOnE2B } from './adapters/e2b-adapter.js';
 
 export type AgentRunResult = {
   text: string;
@@ -21,14 +22,20 @@ export async function runAgentTask(input: {
   handoffContext?: string | undefined;
 }): Promise<AgentRunResult> {
   const adapter = normalizeAdapter(input.adapter);
+  if (adapter === 'e2b') {
+    return runE2BTask(input);
+  }
   if (adapter === 'agent-cli') {
     return runAgentCliTask(input);
   }
   return runLocalTask(input);
 }
 
-export function normalizeAdapter(value: string | null | undefined): 'local-dispatch' | 'agent-cli' {
+export function normalizeAdapter(
+  value: string | null | undefined,
+): 'local-dispatch' | 'agent-cli' | 'e2b' {
   const raw = (value || process.env.ROUNDTABLE_AGENT_ADAPTER || 'local-dispatch').trim().toLowerCase();
+  if (raw === 'e2b') return 'e2b';
   const wantsExternalCli = raw === 'agent-cli'
     || raw === 'external-cli'
     || raw === 'claude'
@@ -139,6 +146,55 @@ async function runAgentCliTask(input: {
       ],
     };
   }
+}
+
+// Runs the agent prompt inside an E2B sandbox. Throws E2BUnavailableError (from
+// runOnE2B) when no key is configured — the dispatch layer catches it and falls
+// back to local-dispatch, so this never silently degrades here.
+async function runE2BTask(input: {
+  workspace: string;
+  task: PlanTask;
+  message: string;
+  handoffContext?: string | undefined;
+}): Promise<AgentRunResult> {
+  const agent = agentForTask(input.task);
+  const path = pathForTask(input.task);
+  const prompt = agentPrompt(agent, input);
+  const command = commandForAgent(agent);
+  const args = commandArgs(prompt, agent);
+  const toolId = `tool_${input.task.id}`;
+  const started: AgentEvent[] = [
+    { type: 'thinking_delta', delta: `Starting ${agent.displayName} in E2B sandbox.` },
+    { type: 'tool_use', id: toolId, name: 'e2b_run', input: { command, agentId: agent.id, role: agent.role, path } },
+  ];
+  const run = await runOnE2B({ command, args, env: e2bAgentEnv(), timeoutMs: timeoutMs() });
+  const ok = run.exitCode === 0 && run.summary.length > 0;
+  const text = ok
+    ? run.summary
+    : `# ${input.task.title}\n\nE2B run did not produce a usable result.\n\n${run.code || run.summary}`;
+  await writeWorkspaceFile(input.workspace, path, text);
+  return {
+    text,
+    path,
+    kind: kindForPath(path),
+    ok,
+    error: ok ? null : `e2b_exit_${run.exitCode}`,
+    events: [
+      ...started,
+      { type: 'tool_result', id: toolId, output: { exitCode: run.exitCode }, ...(ok ? {} : { isError: true }) },
+      { type: 'file_change', path, kind: 'create', diff: `created ${path}` },
+      { type: 'text_delta', delta: ok ? `${agent.displayName} completed in E2B; transcript at ${path}.` : `E2B run failed; diagnostic saved at ${path}.` },
+      ok ? { type: 'done', finishReason: 'completed' } : { type: 'error', message: `e2b_exit_${run.exitCode}`, recoverable: true },
+    ],
+  };
+}
+
+function e2bAgentEnv(): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined && /^(ANTHROPIC|OPENAI|ROUNDTABLE)_/.test(key)) env[key] = value;
+  }
+  return env;
 }
 
 function pathForTask(task: PlanTask): string {
