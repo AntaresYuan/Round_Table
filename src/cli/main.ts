@@ -29,6 +29,16 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (resource === 'turn' && action === 'clarify') {
+    printJson(await runCliAction('roundtable.turn.clarify', flags));
+    return;
+  }
+
+  if (resource === 'turn' && action === 'dispatch') {
+    printJson(await runCliAction('roundtable.turn.dispatch', flags));
+    return;
+  }
+
   if (resource === 'history' && action === 'list') {
     printJson(await runCliAction('roundtable.history.list', flags));
     return;

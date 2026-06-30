@@ -2,7 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { approveTurn, createTurn } from '../src/server/actions/turn-actions.js';
+import { answerClarification, approveTurn, createTurn } from '../src/server/actions/turn-actions.js';
 import { resetData } from '../src/server/store.js';
 import type { Actor } from '../src/server/types.js';
 
@@ -14,6 +14,8 @@ beforeEach(async () => {
   process.env.ROUNDTABLE_DATA_PATH = join(tempDir, 'data.json');
   process.env.ROUNDTABLE_WORKSPACE_ROOT = join(tempDir, 'workspaces');
   process.env.ROUNDTABLE_AGENT_ADAPTER = 'local-dispatch';
+  // Exercise dispatch directly; the clarify gate is covered in its own suite.
+  process.env.ROUNDTABLE_CLARIFY_ENABLED = 'false';
   await resetData();
 });
 
@@ -26,6 +28,7 @@ afterEach(async () => {
   delete process.env.ROUNDTABLE_ENABLE_EXTERNAL_AGENT;
   delete process.env.ROUNDTABLE_MAX_FIX_ROUNDS;
   delete process.env.ROUNDTABLE_SAFETY_ENABLED;
+  delete process.env.ROUNDTABLE_CLARIFY_ENABLED;
   await rm(tempDir, { recursive: true, force: true });
 });
 
@@ -97,5 +100,27 @@ describe('dispatchTurn — DAG scheduler integration', () => {
 
     expect(result.dispatchStatus).toBe('completed');
     expect(result.records.every((r) => r.status === 'completed')).toBe(true);
+  });
+
+  it('parks a vague request for clarification, then plans after the user answers', async () => {
+    // Enable the clarify gate for this case (heuristic path, no model key).
+    process.env.ROUNDTABLE_CLARIFY_ENABLED = 'true';
+
+    const parked = await createTurn({ actor, message: 'make a website' });
+    expect(parked.needsClarification).toBe(true);
+    expect(parked.clarifyQuestions.length).toBeGreaterThan(0);
+    expect(parked.plan.tasks).toHaveLength(0); // not planned yet
+
+    const q = parked.clarifyQuestions[0]!;
+    const opt = q.options[0]!;
+    const resumed = await answerClarification({
+      actor,
+      turnId: parked.id,
+      answers: [{ questionId: q.id, optionId: opt.id, label: opt.label }],
+    });
+
+    expect(resumed.needsClarification).toBe(false);
+    expect(resumed.plan.tasks.length).toBeGreaterThan(0); // now planned
+    expect(resumed.clarifyAnswers).toHaveLength(1);
   });
 });

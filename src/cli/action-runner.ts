@@ -1,6 +1,7 @@
 import { resetData } from '../server/store.js';
 import { createChat, createMessage } from '../server/actions/chat-actions.js';
-import { approveTurn, createTurn, dispatchTurn, listTurns } from '../server/actions/turn-actions.js';
+import { answerClarification, approveTurn, createTurn, dispatchTurn, listTurns } from '../server/actions/turn-actions.js';
+import type { ClarifyAnswer } from '../server/types.js';
 import { createWorkbench } from '../server/actions/workbench-actions.js';
 import type { Actor } from '../server/types.js';
 
@@ -49,6 +50,15 @@ export async function runCliAction(action: string, input: Record<string, unknown
       agentAdapter: optionalString(input, 'agentAdapter'),
     });
     return result({ approval }, [`approved:${approval.id}`]);
+  }
+
+  if (action === 'roundtable.turn.clarify') {
+    const turn = await answerClarification({
+      actor,
+      turnId: readString(input, 'turnId'),
+      answers: readAnswers(input),
+    });
+    return result({ turn }, [`clarified:${turn.id}`]);
   }
 
   if (action === 'roundtable.turn.dispatch') {
@@ -133,6 +143,26 @@ function readDecision(input: Record<string, unknown>): 'approve' | 'reject' {
   const value = input.decision;
   if (value === 'reject') return 'reject';
   return 'approve';
+}
+
+// --answers '[{"questionId":"stack","optionId":"fullstack","label":"Full-stack app"}]'
+function readAnswers(input: Record<string, unknown>): ClarifyAnswer[] {
+  const raw = input.answers;
+  if (typeof raw !== 'string') return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((a): a is Record<string, unknown> => !!a && typeof a === 'object')
+      .map((a) => ({
+        questionId: String(a.questionId ?? ''),
+        optionId: String(a.optionId ?? ''),
+        label: String(a.label ?? ''),
+      }))
+      .filter((a) => a.questionId && a.label);
+  } catch {
+    return [];
+  }
 }
 
 function cliActor(): Actor {

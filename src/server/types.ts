@@ -79,6 +79,27 @@ export type Intake = {
   risk: 'low' | 'medium' | 'high';
 };
 
+// A clarifying question the planner asks when the request is too vague to plan.
+// The user only picks an option (nocode-friendly); answers feed back into the plan.
+export type ClarifyOption = {
+  id: string;
+  label: string;
+  description?: string | undefined;
+};
+
+export type ClarifyQuestion = {
+  id: string;
+  question: string;
+  options: ClarifyOption[];
+};
+
+export type ClarifyAnswer = {
+  questionId: string;
+  optionId: string;
+  // The free-text label chosen, so the planner can read it directly.
+  label: string;
+};
+
 export type PlanTask = {
   id: string;
   title: string;
@@ -145,6 +166,11 @@ export type LocalTurn = {
   provider: string;
   model: string;
   pmMessage: string;
+  // Clarify gate: when the planner finds the request too vague it returns
+  // questions and the turn pauses here (before dispatch) until the user answers.
+  needsClarification: boolean;
+  clarifyQuestions: ClarifyQuestion[];
+  clarifyAnswers: ClarifyAnswer[];
   needsApproval: boolean;
   approvalStatus: 'pending' | 'approved' | 'rejected';
   approvedAt: string | null;

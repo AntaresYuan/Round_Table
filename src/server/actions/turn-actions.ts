@@ -5,6 +5,8 @@ import type {
   Actor,
   AgentEvent,
   Artifact,
+  ClarifyAnswer,
+  ClarifyQuestion,
   DispatchRecord,
   Handoff,
   Intake,
@@ -13,6 +15,7 @@ import type {
   PlanTask,
   WorkflowRun,
 } from '../types.js';
+import { applyAnswers, assessClarity } from './clarify-actions.js';
 import { runAgentTask, normalizeAdapter } from './agent-runner.js';
 import { E2BUnavailableError } from './adapters/e2b-adapter.js';
 import { MiniMaxUnavailableError } from './adapters/minimax-adapter.js';
@@ -48,27 +51,85 @@ export async function createTurn(input: CreateTurnInput): Promise<TurnResponse> 
   if (!message) throw new ActionError('missing_message', 400);
   const turnId = input.turnId?.trim() || id('turn');
   const chatId = input.chatId?.trim() || null;
-  const intake = intakeFromMessage(message);
-  const plan = planFromMessage(message);
-  const artifacts = baseArtifacts(turnId, chatId ?? `local-${turnId}`, message, intake, plan);
+
+  // Clarify gate: the planner judges whether the request is clear enough to plan.
+  // If not, pause here with multiple-choice questions and DON'T build a plan yet —
+  // the user answers, then answerClarification() resumes with the enriched goal.
+  const assessment = await assessClarity(message);
   const now = nowIso();
-  const turn: LocalTurn = {
+  if (assessment.needsClarification) {
+    const turn = buildTurn({
+      turnId,
+      chatId,
+      ownerId: input.actor?.id ?? null,
+      message,
+      now,
+      needsClarification: true,
+      clarifyQuestions: assessment.questions,
+      clarifyAnswers: [],
+    });
+    await mutateData((data) => {
+      data.turns = [turn, ...data.turns.filter((item) => item.id !== turnId)];
+    });
+    return turnResponse(turn);
+  }
+
+  const turn = buildTurn({
+    turnId,
+    chatId,
+    ownerId: input.actor?.id ?? null,
+    message,
+    now,
+  });
+  await mutateData((data) => {
+    data.turns = [turn, ...data.turns.filter((item) => item.id !== turnId)];
+    if (chatId) {
+      upsertArtifacts(data.artifacts, turn.artifacts);
+      data.handoffs.push(handoffForTurn(input.actor, chatId, turn));
+    }
+  });
+  return turnResponse(turn);
+}
+
+// Builds a LocalTurn. When `needsClarification` is set the turn is parked before
+// planning (empty plan); otherwise a real plan + base artifacts are attached.
+function buildTurn(opts: {
+  turnId: string;
+  chatId: string | null;
+  ownerId: string | null;
+  message: string;
+  now: string;
+  needsClarification?: boolean;
+  clarifyQuestions?: ClarifyQuestion[];
+  clarifyAnswers?: ClarifyAnswer[];
+}): LocalTurn {
+  const { turnId, chatId, ownerId, message, now } = opts;
+  const parked = opts.needsClarification === true;
+  const intake = intakeFromMessage(message);
+  const plan = parked ? { summary: `Awaiting clarification: ${message.slice(0, 80)}`, tasks: [] } : planFromMessage(message);
+  const artifacts = parked ? [] : baseArtifacts(turnId, chatId ?? `local-${turnId}`, message, intake, plan);
+  return {
     id: turnId,
     localChatId: chatId,
-    ownerId: input.actor?.id ?? null,
+    ownerId,
     message,
     status: 'done',
     createdAt: now,
     provider: 'roundtable-local',
     model: 'agent-chain-v1',
-    pmMessage: `Starting ${plan.tasks.length} agent step${plan.tasks.length === 1 ? '' : 's'}.`,
+    pmMessage: parked
+      ? 'I need a couple of details before I plan this.'
+      : `Starting ${plan.tasks.length} agent step${plan.tasks.length === 1 ? '' : 's'}.`,
+    needsClarification: parked,
+    clarifyQuestions: opts.clarifyQuestions ?? [],
+    clarifyAnswers: opts.clarifyAnswers ?? [],
     needsApproval: false,
     approvalStatus: 'approved',
     approvedAt: now,
     dispatchStatus: 'not_started',
     dispatchAdapter: null,
     dispatchedAt: null,
-    dispatchStage: 'queued',
+    dispatchStage: parked ? 'clarifying' : 'queued',
     dispatchError: null,
     dispatchWorkspacePath: null,
     dispatch: [],
@@ -79,15 +140,41 @@ export async function createTurn(input: CreateTurnInput): Promise<TurnResponse> 
     workflowRun: null,
     error: null,
   };
+}
+
+/**
+ * Resume a clarification-parked turn: fold the user's choices into the goal,
+ * build the real plan, and replace the parked turn so it can be dispatched.
+ */
+export async function answerClarification(input: {
+  turnId: string;
+  answers: ClarifyAnswer[];
+  actor?: Actor | null | undefined;
+}): Promise<TurnResponse> {
+  const existing = await getTurn(input.turnId);
+  if (!existing) throw new ActionError('turn_not_found', 404);
+  if (!existing.needsClarification) throw new ActionError('turn_not_awaiting_clarification', 400);
+
+  const enrichedMessage = applyAnswers(existing.message, existing.clarifyQuestions, input.answers);
+  const now = nowIso();
+  const planned = buildTurn({
+    turnId: existing.id,
+    chatId: existing.localChatId,
+    ownerId: existing.ownerId,
+    message: enrichedMessage,
+    now,
+    clarifyAnswers: input.answers,
+  });
+  // Preserve the original user-facing message; keep the enriched text in the plan.
+  const turn: LocalTurn = { ...planned, message: existing.message, createdAt: existing.createdAt };
 
   await mutateData((data) => {
-    data.turns = [turn, ...data.turns.filter((item) => item.id !== turnId)];
-    if (chatId) {
-      upsertArtifacts(data.artifacts, artifacts);
-      data.handoffs.push(handoffForTurn(input.actor, chatId, turn));
+    data.turns = [turn, ...data.turns.filter((item) => item.id !== turn.id)];
+    if (turn.localChatId) {
+      upsertArtifacts(data.artifacts, turn.artifacts);
+      data.handoffs.push(handoffForTurn(input.actor, turn.localChatId, turn));
     }
   });
-
   return turnResponse(turn);
 }
 
@@ -287,9 +374,13 @@ function turnResponse(turn: LocalTurn) {
     provider: turn.provider,
     model: turn.model,
     pmMessage: turn.pmMessage,
+    needsClarification: turn.needsClarification,
+    clarifyQuestions: turn.clarifyQuestions,
+    clarifyAnswers: turn.clarifyAnswers,
     needsApproval: turn.needsApproval,
     approvalStatus: turn.approvalStatus,
     dispatchStatus: turn.dispatchStatus,
+    dispatchStage: turn.dispatchStage,
     artifacts: turn.artifacts,
     intake: turn.intake,
     plan: turn.plan,

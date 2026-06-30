@@ -22,6 +22,9 @@ beforeEach(async () => {
   process.env.ROUNDTABLE_DATA_PATH = join(tempDir, 'data.json');
   process.env.ROUNDTABLE_WORKSPACE_ROOT = join(tempDir, 'workspaces');
   process.env.ROUNDTABLE_AGENT_ADAPTER = 'local-dispatch';
+  // These tests exercise the build/dispatch pipeline directly, not the clarify
+  // gate — disable clarification so plans are produced immediately.
+  process.env.ROUNDTABLE_CLARIFY_ENABLED = 'false';
   await resetData();
 });
 
@@ -33,6 +36,7 @@ afterEach(async () => {
   delete process.env.ROUNDTABLE_AGENT_ARGS;
   delete process.env.ROUNDTABLE_ENABLE_EXTERNAL_AGENT;
   delete process.env.ROUNDTABLE_ALLOW_CLAUDE_CLI;
+  delete process.env.ROUNDTABLE_CLARIFY_ENABLED;
   await rm(tempDir, { recursive: true, force: true });
 });
 
