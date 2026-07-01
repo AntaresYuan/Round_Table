@@ -280,6 +280,7 @@ function LocalLiveTurn({ turn, agents, turnActions, showPreview }) {
                   workspacePath={turn.result.dispatchWorkspacePath || turn.result.workspacePath}
                   previewArtifact={showPreview && !interrupted ? previewArtifact : null}
                   agents={agents}
+                  mission={turn.result.mission}
                 />
               ))}
             </div>
@@ -608,10 +609,11 @@ function ExpandableArtifact({ artifact, owner }) {
   );
 }
 
-function LocalResultCard({ artifacts, dispatchStatus, dispatchAdapter, dispatchStage, workspacePath, previewArtifact, agents }) {
+function LocalResultCard({ artifacts, dispatchStatus, dispatchAdapter, dispatchStage, workspacePath, previewArtifact, agents, mission }) {
   const completed = dispatchStatus === 'completed';
   const codeCount = artifacts.filter((artifact) => artifact.kind === 'code').length;
   const reviewCount = artifacts.filter((artifact) => artifact.ownerAgentId === 'reviewer').length;
+  const reportReady = mission?.finalDelivery?.status === 'ready';
   const statusColor = completed ? 'var(--ok)' : dispatchStatus === 'failed' ? 'var(--bad)' : 'var(--run)';
   return (
     <div style={{ marginTop: 12, border: '1px solid var(--border)', borderRadius: 'var(--r-card)',
@@ -624,7 +626,7 @@ function LocalResultCard({ artifacts, dispatchStatus, dispatchAdapter, dispatchS
             {completed ? 'Result ready' : 'Result in progress'}
           </div>
           <div className="mono" style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 2 }}>
-            {artifacts.length} artifacts · {codeCount} code · {reviewCount} review · adapter={dispatchAdapter || 'local-dispatch'} · next={dispatchStage || 'done'}
+            {artifacts.length} artifacts · {codeCount} code · {reviewCount} review · final report={reportReady ? mission.finalDelivery.recommendation : 'not_ready'} · adapter={dispatchAdapter || 'local-dispatch'} · next={dispatchStage || 'done'}
           </div>
         </div>
         <span style={{ fontSize: 11.5, color: statusColor, padding: '3px 8px', borderRadius: 999,

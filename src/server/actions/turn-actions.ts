@@ -576,7 +576,7 @@ export async function dispatchTurn(input: DispatchInput): Promise<DispatchRespon
     ...(record.fixRound !== undefined ? { fixRound: record.fixRound } : {}),
   }));
 
-  const artifacts: Artifact[] = [
+  const runArtifacts: Artifact[] = [
     ...turn.artifacts,
     ...run.tasks
       .map((task) => artifactByTask.get(task.id))
@@ -600,6 +600,9 @@ export async function dispatchTurn(input: DispatchInput): Promise<DispatchRespon
   const failed = run.tasks.some(
     (task) => (task.status === 'failed' || task.status === 'blocked') && !repaired.has(task.id),
   );
+  const artifacts: Artifact[] = failed
+    ? runArtifacts
+    : [...runArtifacts, finalReportArtifact(turn, runArtifacts, records)];
   // Persist any fixer tasks the scheduler derived at runtime back into the plan,
   // so the UI (roundtable + todo list, which read plan.tasks) shows the fix pass
   // — front and back stay in sync on the real executed graph.
@@ -975,6 +978,60 @@ function artifactFromRun(
     uri: `workspace://${result.path}`,
     preview: result.text,
     code: result.kind === 'code' ? result.text : null,
+    createdAt: nowIso(),
+  };
+}
+
+function finalReportArtifact(
+  turn: LocalTurn,
+  artifacts: Artifact[],
+  records: DispatchRecord[],
+): Artifact {
+  const reviewerArtifacts = artifacts.filter((artifact) =>
+    artifact.ownerAgentId === 'vera' || artifact.ownerAgentId === 'reviewer',
+  );
+  const failedRecords = records.filter((record) => record.status === 'failed' || record.status === 'blocked');
+  const testsObserved = artifacts.some((artifact) => /test|spec|review|verify/i.test(`${artifact.title}\n${artifact.preview ?? ''}`));
+  const report = [
+    `# Final Delivery Report`,
+    '',
+    `Goal: ${turn.message}`,
+    '',
+    `Recommendation: accept`,
+    `Reviewer confidence: ${failedRecords.length > 0 ? 'blocked' : reviewerArtifacts.length > 0 ? 'pass' : 'warning'}`,
+    '',
+    `## What changed`,
+    '',
+    ...artifacts.map((artifact) => `- ${artifact.title} (${artifact.kind}) by ${artifact.ownerAgentId}`),
+    '',
+    `## Review`,
+    '',
+    reviewerArtifacts.length > 0
+      ? reviewerArtifacts.map((artifact) => `- Reviewed in ${artifact.title}`).join('\n')
+      : '- No dedicated reviewer artifact was produced.',
+    '',
+    `## Tests`,
+    '',
+    testsObserved
+      ? '- Test or verification evidence was mentioned in generated artifacts.'
+      : '- No explicit test command output was captured; treat this as a remaining verification gap.',
+    '',
+    `## Risks`,
+    '',
+    failedRecords.length > 0
+      ? failedRecords.map((record) => `- ${record.taskId}: ${record.error ?? record.status}`).join('\n')
+      : '- No blocking task failures recorded.',
+  ].join('\n');
+  return {
+    id: `final_report_${turn.id}`,
+    chatId: turn.localChatId ?? `local-${turn.id}`,
+    kind: 'markdown',
+    title: `reports/${turn.id}-final-delivery.md`,
+    ownerAgentId: 'orchestrator',
+    version: 1,
+    uri: `turn://${turn.id}/final-report`,
+    preview: report,
+    code: null,
     createdAt: nowIso(),
   };
 }

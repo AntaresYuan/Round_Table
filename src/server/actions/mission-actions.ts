@@ -730,10 +730,11 @@ function updateDecisions(
 
 function finalDeliveryForTurn(turn: LocalTurn): MissionFinalDelivery {
   if (turn.dispatchStatus !== 'completed') return initialFinalDelivery();
+  const reportArtifact = turn.artifacts.find((artifact) => artifact.id === `final_report_${turn.id}`);
   const reviewArtifact = turn.artifacts.find((artifact) => artifact.ownerAgentId === 'vera' || artifact.ownerAgentId === 'reviewer');
   return {
     status: 'ready',
-    reportArtifactId: reviewArtifact?.id ?? turn.artifacts.at(-1)?.id ?? null,
+    reportArtifactId: reportArtifact?.id ?? reviewArtifact?.id ?? turn.artifacts.at(-1)?.id ?? null,
     recommendation: 'accept',
   };
 }
