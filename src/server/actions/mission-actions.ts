@@ -637,8 +637,18 @@ export function buildHandoffCardV2(input: {
       generatedBy: 'orchestrator',
       generatedAt,
       agentCardSnapshot: agentCardFor(agent),
+      selectionReason: selectionReasonForTask(input.task, agent.id),
     },
   };
+}
+
+function selectionReasonForTask(task: PlanTask, agentId: string): string {
+  if (task.owner) return `Selected ${agentId} from explicit task owner ${task.owner}.`;
+  if (task.assignee) return `Selected ${agentId} from task assignee ${task.assignee}.`;
+  if (task.requiredCapabilities && task.requiredCapabilities.length > 0) {
+    return `Selected ${agentId} because it matches required capabilities: ${task.requiredCapabilities.join(', ')}.`;
+  }
+  return `Selected ${agentId} by default orchestrator fallback.`;
 }
 
 function syncMissionWithTurn(

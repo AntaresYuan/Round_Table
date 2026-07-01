@@ -695,6 +695,11 @@ function HandoffCard({ ho, agents, onEdit }) {
                 {v2.contextPackage?.summary && (
                   <Md text={v2.contextPackage.summary} prose={false} />
                 )}
+                {v2.provenance?.selectionReason && (
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                    {v2.provenance.selectionReason}
+                  </div>
+                )}
                 {(v2.risks || []).length > 0 && (
                   <div style={{ display: 'grid', gap: 5 }}>
                     {v2.risks.map((risk, i) => (

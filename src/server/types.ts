@@ -148,6 +148,7 @@ export type HandoffCardV2 = {
     generatedBy: string;
     generatedAt: string;
     agentCardSnapshot: AgentCard | null;
+    selectionReason: string;
   };
 };
 

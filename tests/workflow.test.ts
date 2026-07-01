@@ -96,6 +96,8 @@ describe('Roundtable clean workflow', () => {
     const handoffs = await listHandoffsByChat(actor, chat.id);
     expect(handoffs.filter((handoff) => handoff.card?.['protocolVersion'] === 'roundtable.handoff.v2').length)
       .toBeGreaterThanOrEqual(turn.plan.tasks.length);
+    expect((handoffs.find((handoff) => handoff.card?.['protocolVersion'] === 'roundtable.handoff.v2')?.card?.['handoffV2'] as { provenance?: { selectionReason?: string } } | undefined)?.provenance?.selectionReason)
+      .toContain('Selected');
     const rejected = await rejectHandoff(actor, handoffs.find((handoff) => handoff.card?.['protocolVersion'] === 'roundtable.handoff.v2')!.id);
     expect(rejected.currentStageId).toBe('repair');
     expect(rejected.tasks.some((task) => task.id.startsWith('repair_handoff_') && task.status === 'pending')).toBe(true);
