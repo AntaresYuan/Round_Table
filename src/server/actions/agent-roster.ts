@@ -132,13 +132,22 @@ export function agentForTask(input: {
   owner?: string | undefined;
   assignee: string;
   role?: string | undefined;
+  requiredCapabilities?: string[] | undefined;
 }): AgentProfile {
   const byOwner = input.owner ? resolveAgentMention(input.owner) : null;
   if (byOwner) return byOwner;
   const byAssignee = resolveAgentMention(input.assignee);
   if (byAssignee) return byAssignee;
   const byRole = input.role ? resolveAgentMention(input.role) : null;
-  return byRole ?? AGENT_ROSTER[0]!;
+  if (byRole) return byRole;
+  const required = input.requiredCapabilities ?? [];
+  if (required.length > 0) {
+    const byCapabilities = AGENT_ROSTER.find((agent) =>
+      required.every((capability) => agent.capabilities.includes(capability)),
+    );
+    if (byCapabilities) return byCapabilities;
+  }
+  return AGENT_ROSTER[0]!;
 }
 
 export function mentionTokens(message: string): string[] {
