@@ -96,7 +96,9 @@ const aiRouter = createTRPCRouter({
   polish: publicProcedure
     .input(z.object({ text: z.string() }))
     .mutation(({ input }) => polishText(input)),
-  suggestTasks: protectedProcedure.query(({ ctx }) => suggestTasks(ctx.user)),
+  suggestTasks: publicProcedure
+    .input(z.object({ context: z.string().optional() }).optional())
+    .query(({ ctx, input }) => suggestTasks(ctx.user, input?.context)),
 });
 
 export const appRouter = createTRPCRouter({

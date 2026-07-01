@@ -55,4 +55,10 @@ describe('suggestTasks', () => {
 
     expect(suggestions[0]?.goal).toContain('CSV export');
   });
+
+  it('recalls scene-library suggestions from explicit local context', async () => {
+    const suggestions = await suggestTasks(null, 'The user is building dashboard analytics with charts and filters.');
+
+    expect(suggestions[0]?.title).toBe('Dashboard analytics');
+  });
 });

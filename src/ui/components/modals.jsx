@@ -128,13 +128,12 @@ function NewWorkbenchModal({ agents, onClose, onCreate }) {
 }
 
 /* ---- New Mission --------------------------------------------------------- */
-function NewTaskModal({ workbench, members, agents, onClose, onCreate }) {
+function NewTaskModal({ workbench, members, agents, suggestionContext, onClose, onCreate }) {
   const [goal, setGoal] = useStateM('');
   const [workflowTemplateId, setWorkflowTemplateId] = useStateM('wf-feature-builder');
   const polish = trpc.ai.polish.useMutation({ onSuccess: (r) => setGoal(r.text) });
   const { status: authStatus } = useSession();
-  const suggestQ = trpc.ai.suggestTasks.useQuery(undefined, {
-    enabled: authStatus === 'authenticated',
+  const suggestQ = trpc.ai.suggestTasks.useQuery({ context: suggestionContext || '' }, {
     retry: false,
     staleTime: 60_000,
   });
@@ -191,7 +190,7 @@ function NewTaskModal({ workbench, members, agents, onClose, onCreate }) {
     })) || []),
   }));
   const selectedTemplate = missionTemplates.find((template) => template.id === workflowTemplateId) || missionTemplates[0];
-  // Personalized suggestions when signed in (+ LLM key); static fallback otherwise.
+  // Suggestion chips come from the server scene library, ranked by recent context.
   const examples = suggestQ.data ?? [
     { title: 'Pricing page', goal: 'Build a pricing page with monthly/annual billing toggle, plan comparison, FAQ, and conversion-focused CTA.' },
     { title: 'CSV export endpoint', goal: 'Build a REST endpoint for CSV export with filters, authorization checks, streaming response, and error handling.' },

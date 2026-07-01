@@ -559,6 +559,21 @@ function App() {
   const activeTaskTitle = localLive
     ? (turnToTask(activeLocalTurn || localTurns[0] || { message: '' }).title ?? '')
     : (tasks.find((tk) => tk.id === activeChatId)?.title ?? '');
+  const missionSuggestionContext = useMemo(() => {
+    const recentLocalText = localTurns
+      .slice(0, 5)
+      .map((turn) => turn.message)
+      .filter(Boolean)
+      .join(' ');
+    const recentTaskText = tasks
+      .slice(0, 5)
+      .map((task) => task.title)
+      .filter(Boolean)
+      .join(' ');
+    return [activeTaskTitle, localLive ? recentLocalText : recentTaskText]
+      .filter(Boolean)
+      .join(' ');
+  }, [activeTaskTitle, localLive, localTurns, tasks]);
   const [recDismissed, setRecDismissed] = useState(null);
   const [, setWfTick] = useState(0);
   const workflowRec = recommendWorkflow(activeTaskTitle, RT.BUILTIN_WORKFLOWS, RT.WORKBENCH.workflowId);
@@ -1083,6 +1098,7 @@ function App() {
         activeTask={(['working', 'speaking', 'thinking'].includes(st.status[dmAgent])) ? (RT.PLAN.tasks.find((tk) => tk.owner === dmAgent) || {}).id : null}
         onClose={() => setDmAgent(null)} />}
       {modal === 'task' && <NewTaskModal workbench={railWorkbench} members={memberIds} agents={agents}
+        suggestionContext={missionSuggestionContext}
         onClose={() => setModal(null)} onCreate={async ({ goal, workflowTemplateId }) => {
           setModal(null);
           if (authed) {

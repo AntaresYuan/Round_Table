@@ -81,9 +81,9 @@ function lowerFirst(text: string): string {
   return text[0]!.toLowerCase() + text.slice(1);
 }
 
-export async function suggestTasks(actor: Actor): Promise<Array<{ title: string; goal: string }>> {
-  const chats = await listChats(actor);
-  const recentText = chats.slice(0, 8).map((chat) => chat.title).join(' ');
+export async function suggestTasks(actor: Actor | null, context = ''): Promise<Array<{ title: string; goal: string }>> {
+  const chats = actor ? await listChats(actor) : [];
+  const recentText = [context, ...chats.slice(0, 8).map((chat) => chat.title)].join(' ');
   return suggestFromLibrary(recentText).slice(0, 3).map((item) => ({
     title: item.title,
     goal: item.goal,
