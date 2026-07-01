@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createChat, createMessage, deleteChat } from '../src/server/actions/chat-actions.js';
 import { normalizeAdapter } from '../src/server/actions/agent-runner.js';
-import { listMissions } from '../src/server/actions/mission-actions.js';
+import { listMissions, rejectHandoff } from '../src/server/actions/mission-actions.js';
 import { listHandoffsByChat } from '../src/server/actions/read-actions.js';
 import { answerClarification, approveTurn, createTurn, listTurns, reviewSeverities } from '../src/server/actions/turn-actions.js';
 import { createWorkbench } from '../src/server/actions/workbench-actions.js';
@@ -96,6 +96,9 @@ describe('Roundtable clean workflow', () => {
     const handoffs = await listHandoffsByChat(actor, chat.id);
     expect(handoffs.filter((handoff) => handoff.card?.['protocolVersion'] === 'roundtable.handoff.v2').length)
       .toBeGreaterThanOrEqual(turn.plan.tasks.length);
+    const rejected = await rejectHandoff(actor, handoffs.find((handoff) => handoff.card?.['protocolVersion'] === 'roundtable.handoff.v2')!.id);
+    expect(rejected.currentStageId).toBe('repair');
+    expect(rejected.tasks.some((task) => task.id.startsWith('repair_handoff_') && task.status === 'pending')).toBe(true);
   });
 
   it('deletes mission records when a chat is deleted', async () => {
