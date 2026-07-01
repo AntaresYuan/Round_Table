@@ -685,7 +685,14 @@ export async function interruptTurn(turnId: string): Promise<DispatchResponse> {
     dispatchStage: 'interrupted',
     dispatchError: 'interrupted_by_user',
   }));
-  return dispatchResponse(requireTurn(turn));
+  const interrupted = requireTurn(turn);
+  const mission = await updateMissionForDispatch(interrupted);
+  const synced = await updateTurn(interrupted.id, (current) => ({
+    ...current,
+    mission: mission ?? current.mission,
+    workflowRun: workflowRunForTurn({ ...current, mission: mission ?? current.mission }),
+  }));
+  return dispatchResponse(requireTurn(synced));
 }
 
 export async function decideTurnFinalDelivery(input: FinalDeliveryInput): Promise<DispatchResponse> {
