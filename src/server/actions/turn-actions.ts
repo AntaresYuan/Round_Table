@@ -668,9 +668,11 @@ export async function dispatchTurn(input: DispatchInput): Promise<DispatchRespon
     mission: mission ?? current.mission,
     workflowRun: workflowRunForTurn({ ...current, mission: mission ?? current.mission }),
   })));
-  if (finalTurn.localChatId) {
+  const finalChatId = finalTurn.localChatId;
+  if (finalChatId) {
     await mutateData((data) => {
       upsertArtifacts(data.artifacts, finalTurn.artifacts);
+      data.handoffs.push(...handoffsForTasks(finalTurn, finalChatId));
     });
   }
   return dispatchResponse(finalTurn);
@@ -1225,6 +1227,57 @@ function handoffForTurn(actor: Actor | null | undefined, chatId: string, turn: L
       generatedBy: 'orchestrator',
     },
   };
+}
+
+function handoffsForTasks(turn: LocalTurn, chatId: string): Handoff[] {
+  const mission = turn.mission ?? buildMissionSnapshot({
+    ownerId: turn.ownerId,
+    chatId: turn.localChatId,
+    turnId: turn.id,
+    missionId: turn.missionId,
+    goal: turn.message,
+    plan: turn.plan,
+    needsClarification: turn.needsClarification,
+    workflowTemplateId: turn.workflowTemplateId,
+  });
+  return turn.plan.tasks.map((task) => {
+    const taskArtifacts = turn.artifacts.filter((artifact) => artifact.id.startsWith(`${task.id}_`));
+    const v2 = buildHandoffCardV2({ mission, turn, task, artifacts: taskArtifacts });
+    return {
+      id: id('handoff'),
+      ownerId: turn.ownerId ?? 'local-user',
+      chatId,
+      createdAt: nowIso(),
+      card: {
+        protocolVersion: v2.protocolVersion,
+        missionId: turn.missionId,
+        handoffV2: v2,
+        id: v2.cardId,
+        from: v2.fromAgent,
+        to: `@${v2.toAgent}`,
+        scenario: 'agent_handoff',
+        task: task.title,
+        userIntent: turn.message,
+        taskBrief: task.brief,
+        pinnedMessages: [],
+        rolesInGroup: AGENT_ROSTER,
+        previousAgent: null,
+        relevantArtifacts: taskArtifacts.map((artifact) => ({
+          id: artifact.id,
+          kind: artifact.kind,
+          title: artifact.title,
+        })),
+        fullHistoryRef: turn.localChatId ? `chat://${turn.localChatId}` : `turn://${turn.id}`,
+        artifacts: taskArtifacts.map((artifact) => ({
+          id: artifact.id,
+          kind: artifact.kind,
+          title: artifact.title,
+        })),
+        createdAt: nowIso(),
+        generatedBy: 'orchestrator',
+      },
+    };
+  });
 }
 
 function formatHandoffContext(

@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createChat, createMessage } from '../src/server/actions/chat-actions.js';
 import { normalizeAdapter } from '../src/server/actions/agent-runner.js';
+import { listHandoffsByChat } from '../src/server/actions/read-actions.js';
 import { answerClarification, approveTurn, createTurn, listTurns, reviewSeverities } from '../src/server/actions/turn-actions.js';
 import { createWorkbench } from '../src/server/actions/workbench-actions.js';
 import { resetData } from '../src/server/store.js';
@@ -90,6 +91,10 @@ describe('Roundtable clean workflow', () => {
     const history = await listTurns(chat.id);
     expect(history).toHaveLength(1);
     expect(history[0]?.dispatchStatus).toBe('completed');
+
+    const handoffs = await listHandoffsByChat(actor, chat.id);
+    expect(handoffs.filter((handoff) => handoff.card?.['protocolVersion'] === 'roundtable.handoff.v2').length)
+      .toBeGreaterThanOrEqual(turn.plan.tasks.length);
   });
 
   it('gives each task a distinct title that excludes the clarification block', async () => {
