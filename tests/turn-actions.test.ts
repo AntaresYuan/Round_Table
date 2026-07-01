@@ -2,7 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { answerClarification, approveTurn, createTurn } from '../src/server/actions/turn-actions.js';
+import { answerClarification, approveTurn, createTurn, interruptTurn } from '../src/server/actions/turn-actions.js';
 import { resetData } from '../src/server/store.js';
 import type { Actor } from '../src/server/types.js';
 
@@ -122,5 +122,15 @@ describe('dispatchTurn — DAG scheduler integration', () => {
     expect(resumed.needsClarification).toBe(false);
     expect(resumed.plan.tasks.length).toBeGreaterThan(0); // now planned
     expect(resumed.clarifyAnswers).toHaveLength(1);
+  });
+
+  it('syncs Mission state when a turn is interrupted', async () => {
+    const turn = await createTurn({ actor, message: 'Build a waitlist page and review it.' });
+    await approveTurn({ turnId: turn.id, decision: 'approve' });
+    const interrupted = await interruptTurn(turn.id);
+
+    expect(interrupted.dispatchStage).toBe('interrupted');
+    expect(interrupted.mission?.status).toBe('failed');
+    expect(interrupted.workflowRun).not.toBeNull();
   });
 });
