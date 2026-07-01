@@ -105,11 +105,15 @@ describe('Mission P0 migration', () => {
       .toBe('pending');
     expect(testsRequested.mission?.tasks.some((task) => task.id === `test_final_${turn.id}` && task.stageId === 'review'))
       .toBe(true);
+    const testsRequestedAgain = await decideTurnFinalDelivery({ turnId: turn.id, decision: 'tests' });
+    expect(testsRequestedAgain.mission?.tasks.filter((task) => task.id === `test_final_${turn.id}`)).toHaveLength(1);
 
     const repairRequested = await decideTurnFinalDelivery({ turnId: turn.id, decision: 'repair' });
     expect(repairRequested.mission?.currentStageId).toBe('repair');
     expect(repairRequested.mission?.tasks.some((task) => task.id === `repair_final_${turn.id}` && task.status === 'pending'))
       .toBe(true);
+    const repairRequestedAgain = await decideTurnFinalDelivery({ turnId: turn.id, decision: 'repair' });
+    expect(repairRequestedAgain.mission?.tasks.filter((task) => task.id === `repair_final_${turn.id}`)).toHaveLength(1);
 
     const accepted = await decideTurnFinalDelivery({ turnId: turn.id, decision: 'accept' });
     expect(accepted.mission?.finalDelivery.status).toBe('accepted');
