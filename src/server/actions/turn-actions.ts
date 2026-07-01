@@ -1325,8 +1325,8 @@ function reviewRequestsFix(): boolean {
 // (blocking) mentions across EN + 中文 wording. Heuristic by design: reviewers
 // write prose, and a count > 0 is enough to decide "this needs a fix pass".
 export function reviewSeverities(report: string): { blocking: number; label: string } {
-  const critical = countMatches(report, /\b(critical|blocker|severe)\b|🔴|严重|致命|阻断/gi);
-  const high = countMatches(report, /\bhigh\b|🟠|高危|高优先级/gi);
+  const critical = countMatches(report, /(^|\n)\s*(#{1,6}\s*)?(\[?\s*)?(critical|blocker|severe)(\s*\]?)?\s*[:：-]|🔴|严重问题|致命|阻断/gi);
+  const high = countMatches(report, /(^|\n)\s*(#{1,6}\s*)?(\[?\s*)?high(\s*\]?)?\s*[:：-]|🟠|高危|高优先级/gi);
   // "If it is solid, say so" — an explicit all-clear shouldn't trigger a fix.
   const allClear = /\b(no (issues|blockers)|looks good|lgtm|ship it|solid)\b|没有(发现)?问题|可以(直接)?交付|无明显问题/i.test(report);
   const blockingSignals = critical + high;

@@ -133,4 +133,27 @@ describe('Mission P0 migration', () => {
     expect(accepted.mission?.checkpoints.find((checkpoint) => checkpoint.kind === 'final_delivery_acceptance')?.status)
       .toBe('satisfied');
   });
+
+  it('produces a concrete checkout delivery artifact for checkout flow requests', async () => {
+    const turn = await createTurn({
+      actor,
+      chatId: 'checkout-chat',
+      message: 'Implement a checkout flow with cart summary, payment handoff, validation, and post-payment confirmation.',
+    });
+
+    const result = await approveTurn({
+      turnId: turn.id,
+      decision: 'approve',
+      autoDispatch: true,
+      agentAdapter: 'local-dispatch',
+    });
+
+    const delivery = result.artifacts.find((artifact) => artifact.kind === 'preview');
+    expect(result.records.some((record) => record.agentId === 'fixer')).toBe(false);
+    expect(result.workflowRun?.stageStates.repair?.status).toBe('pending');
+    expect(delivery?.preview).toContain('Cart summary');
+    expect(delivery?.preview).toContain('Payment handoff');
+    expect(delivery?.preview).toContain('Post-payment confirmation');
+    expect(delivery?.preview).toContain('ZIP must be 5 digits');
+  });
 });

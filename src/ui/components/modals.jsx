@@ -186,7 +186,7 @@ function NewTaskModal({ workbench, members, agents, suggestionContext, onClose, 
     desc: template.desc,
     pipe: (template.pipe || template.stages?.filter((stage) => stage.kind !== 'intake').map((stage) => ({
       icon: stage.icon,
-      label: stage.kind === 'ship' && stage.name === 'Final Report' ? 'Report' : stage.name,
+      label: stage.kind === 'ship' ? 'Delivery' : stage.name,
     })) || []),
   }));
   const selectedTemplate = missionTemplates.find((template) => template.id === workflowTemplateId) || missionTemplates[0];

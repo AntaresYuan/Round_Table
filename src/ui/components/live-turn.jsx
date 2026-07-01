@@ -466,7 +466,12 @@ function LocalInterruptedCard({ turn, agents, artifacts, onResume, onDiscard, on
 function StageCards({ workflow, workflowRun, artifacts, agents, dispatchStatus }) {
   if (!workflow || !workflowRun) return null;
   const stages = workflow.stages.filter(
-    (s) => s.kind !== 'intake' && (s.seats?.length ?? 0) > 0,
+    (s) => {
+      const status = workflowRun.stageStates?.[s.id]?.status || 'pending';
+      return s.kind !== 'intake'
+        && (s.seats?.length ?? 0) > 0
+        && (s.kind !== 'repair' || status !== 'pending');
+    },
   );
   const running = dispatchStatus === 'running';
   const firstUnfinishedId = stages.find(
@@ -629,10 +634,10 @@ function LocalResultCard({ artifacts, dispatchStatus, dispatchAdapter, dispatchS
         <Icon name={completed ? 'check' : 'code'} size={15} style={{ color: statusColor }} />
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontWeight: 750, fontSize: 14, color: 'var(--text)' }}>
-            {completed ? 'Result ready' : 'Result in progress'}
+            {completed ? 'Delivery ready' : 'Delivery in progress'}
           </div>
           <div className="mono" style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 2 }}>
-            {artifacts.length} artifacts · {codeCount} code · {reviewCount} review · confidence={confidence} · tests={mission?.finalDelivery?.testsObserved ? 'observed' : 'missing'} · risks={riskCount} · final report={reportReady ? mission.finalDelivery.recommendation : 'not_ready'} · adapter={dispatchAdapter || 'local-dispatch'} · next={dispatchStage || 'done'}
+            {artifacts.length} artifacts · {codeCount} code · {reviewCount} review · confidence={confidence} · tests={mission?.finalDelivery?.testsObserved ? 'observed' : 'missing'} · risks={riskCount} · delivery={reportReady ? mission.finalDelivery.recommendation : 'not_ready'} · adapter={dispatchAdapter || 'local-dispatch'} · next={dispatchStage || 'done'}
           </div>
         </div>
         <span style={{ fontSize: 11.5, color: statusColor, padding: '3px 8px', borderRadius: 999,
@@ -644,7 +649,7 @@ function LocalResultCard({ artifacts, dispatchStatus, dispatchAdapter, dispatchS
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '10px 14px',
           borderBottom: '1px solid var(--border)', background: 'var(--surface-2)', flexWrap: 'wrap' }}>
           <span style={{ flex: 1, minWidth: 180, fontSize: 12.5, color: 'var(--text-muted)' }}>
-            Final delivery report is ready.
+            Delivery is ready for acceptance.
           </span>
           <button onClick={() => onDecideDelivery('repair')} style={{ display: 'inline-flex', alignItems: 'center', gap: 6,
             padding: '7px 11px', borderRadius: 'var(--r-sm)', border: '1px solid var(--border)', background: 'var(--surface)',
