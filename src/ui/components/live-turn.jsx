@@ -650,6 +650,11 @@ function LocalResultCard({ artifacts, dispatchStatus, dispatchAdapter, dispatchS
             color: 'var(--text-muted)', cursor: 'pointer', font: 'inherit', fontSize: 12.5, fontWeight: 700 }}>
             <Icon name="wrench" size={13} /> Request repair
           </button>
+          <button onClick={() => onDecideDelivery('tests')} style={{ display: 'inline-flex', alignItems: 'center', gap: 6,
+            padding: '7px 11px', borderRadius: 'var(--r-sm)', border: '1px solid var(--border)', background: 'var(--surface)',
+            color: 'var(--text-muted)', cursor: 'pointer', font: 'inherit', fontSize: 12.5, fontWeight: 700 }}>
+            <Icon name="eye" size={13} /> Request tests
+          </button>
           <button onClick={() => onDecideDelivery('accept')} style={{ display: 'inline-flex', alignItems: 'center', gap: 6,
             padding: '7px 11px', borderRadius: 'var(--r-sm)', border: 'none', background: 'var(--ok)',
             color: '#fff', cursor: 'pointer', font: 'inherit', fontSize: 12.5, fontWeight: 700 }}>

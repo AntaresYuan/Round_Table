@@ -87,6 +87,12 @@ describe('Mission P0 migration', () => {
     expect(result.workflowRun?.stageStates.ship?.status).toBe('active');
     expect(result.mission?.artifactIds.length).toBeGreaterThan(0);
 
+    const testsRequested = await decideTurnFinalDelivery({ turnId: turn.id, decision: 'tests' });
+    expect(testsRequested.mission?.finalDelivery.status).toBe('ready');
+    expect(testsRequested.mission?.finalDelivery.recommendation).toBe('review');
+    expect(testsRequested.mission?.checkpoints.find((checkpoint) => checkpoint.kind === 'final_delivery_acceptance')?.status)
+      .toBe('pending');
+
     const accepted = await decideTurnFinalDelivery({ turnId: turn.id, decision: 'accept' });
     expect(accepted.mission?.finalDelivery.status).toBe('accepted');
     expect(accepted.mission?.checkpoints.find((checkpoint) => checkpoint.kind === 'final_delivery_acceptance')?.status)

@@ -416,22 +416,27 @@ export async function setMissionRejected(turn: LocalTurn): Promise<Mission | nul
 
 export async function decideFinalDelivery(
   turn: LocalTurn,
-  decision: 'accept' | 'repair',
+  decision: 'accept' | 'repair' | 'tests',
 ): Promise<Mission | null> {
+  const wantsTests = decision === 'tests';
   return updateMission(turn.missionId, (mission) => ({
     ...mission,
     finalDelivery: {
       ...mission.finalDelivery,
-      status: decision === 'accept' ? 'accepted' : 'rejected',
-      recommendation: decision === 'accept' ? 'accept' : 'repair',
+      status: decision === 'accept' ? 'accepted' : decision === 'repair' ? 'rejected' : 'ready',
+      recommendation: decision === 'accept' ? 'accept' : decision === 'repair' ? 'repair' : 'review',
     },
     checkpoints: mission.checkpoints.map((checkpoint) =>
       checkpoint.kind === 'final_delivery_acceptance'
         ? {
             ...checkpoint,
-            status: decision === 'accept' ? 'satisfied' : 'blocked',
-            requiredAction: decision === 'accept' ? null : 'Request repair from the delivery state.',
-            resolvedAt: nowIso(),
+            status: decision === 'accept' ? 'satisfied' : decision === 'repair' ? 'blocked' : 'pending',
+            requiredAction: decision === 'accept'
+              ? null
+              : wantsTests
+                ? 'Reviewer test evidence requested before final acceptance.'
+                : 'Request repair from the delivery state.',
+            resolvedAt: wantsTests ? null : nowIso(),
           }
         : checkpoint,
     ),
@@ -441,7 +446,11 @@ export async function decideFinalDelivery(
         id: `decision_final_${turn.id}_${decision}`,
         stageId: 'ship',
         actor: 'user',
-        summary: decision === 'accept' ? 'Final delivery accepted.' : 'Final delivery rejected; repair requested.',
+        summary: decision === 'accept'
+          ? 'Final delivery accepted.'
+          : wantsTests
+            ? 'Additional test evidence requested before final acceptance.'
+            : 'Final delivery rejected; repair requested.',
         createdAt: nowIso(),
       },
     ],

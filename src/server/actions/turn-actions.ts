@@ -67,7 +67,7 @@ export type DispatchInput = {
 
 export type FinalDeliveryInput = {
   turnId: string;
-  decision: 'accept' | 'repair';
+  decision: 'accept' | 'repair' | 'tests';
 };
 
 export async function createTurn(input: CreateTurnInput): Promise<TurnResponse> {

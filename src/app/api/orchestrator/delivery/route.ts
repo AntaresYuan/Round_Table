@@ -4,7 +4,7 @@ import { jsonError } from '@/server/route-utils';
 
 const BodySchema = z.object({
   turnId: z.string().min(1),
-  decision: z.enum(['accept', 'repair']),
+  decision: z.enum(['accept', 'repair', 'tests']),
 });
 
 export async function POST(req: Request) {
