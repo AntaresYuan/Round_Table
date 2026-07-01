@@ -9,6 +9,7 @@ import type {
   ClarifyQuestion,
   DispatchRecord,
   Handoff,
+  HandoffCardV2,
   Intake,
   LocalTurn,
   Plan,
@@ -408,11 +409,31 @@ export async function dispatchTurn(input: DispatchInput): Promise<DispatchRespon
 
   const runTask = async (
     task: PlanTask,
-    depOutputs: Record<string, { summary: string }>,
+    depOutputs: Record<string, { summary: string; artifactId?: string | undefined }>,
   ): Promise<TaskResult> => {
-    const handoffContext = Object.entries(depOutputs)
-      .map(([depId, out]) => `## from ${depId}\n\n${out.summary}`)
-      .join('\n\n---\n\n') || undefined;
+    const depEntries = Object.entries(depOutputs);
+    const contextArtifacts = [
+      ...turn.artifacts,
+      ...depEntries
+        .map(([depId]) => artifactByTask.get(depId))
+        .filter((artifact): artifact is Artifact => artifact !== undefined),
+    ];
+    const handoffCard = buildHandoffCardV2({
+      mission: turn.mission ?? buildMissionSnapshot({
+        ownerId: turn.ownerId,
+        chatId: turn.localChatId,
+        turnId: turn.id,
+        missionId: turn.missionId,
+        goal: turn.message,
+        plan: turn.plan,
+        needsClarification: turn.needsClarification,
+        workflowTemplateId: turn.workflowTemplateId,
+      }),
+      turn,
+      task,
+      artifacts: contextArtifacts,
+    });
+    const handoffContext = formatHandoffContext(handoffCard, depOutputs);
 
     let result;
     let fallbackNote: AgentEvent | null = null;
@@ -1128,6 +1149,52 @@ function handoffForTurn(actor: Actor | null | undefined, chatId: string, turn: L
       generatedBy: 'orchestrator',
     },
   };
+}
+
+function formatHandoffContext(
+  card: HandoffCardV2,
+  depOutputs: Record<string, { summary: string; artifactId?: string | undefined }>,
+): string {
+  const upstream = Object.entries(depOutputs)
+    .map(([depId, out]) => [
+      `### ${depId}`,
+      out.artifactId ? `Artifact: ${out.artifactId}` : null,
+      out.summary,
+    ].filter(Boolean).join('\n\n'))
+    .join('\n\n---\n\n');
+  return [
+    `# HandoffCard V2`,
+    '',
+    `protocolVersion: ${card.protocolVersion}`,
+    `cardId: ${card.cardId}`,
+    `missionId: ${card.missionId}`,
+    `fromAgent: ${card.fromAgent}`,
+    `toAgent: ${card.toAgent}`,
+    '',
+    `## Task`,
+    '',
+    card.task.brief,
+    '',
+    `## Context package`,
+    '',
+    card.contextPackage.summary,
+    '',
+    card.artifacts.length > 0
+      ? [
+          `## Artifact references`,
+          '',
+          ...card.artifacts.map((artifact) => `- ${artifact.id} (${artifact.kind}) ${artifact.title}`),
+          '',
+        ].join('\n')
+      : '',
+    upstream ? `## Upstream outputs\n\n${upstream}` : '',
+    '',
+    `## Next action`,
+    '',
+    card.nextAction,
+    '',
+    card.risks.length > 0 ? `## Risks\n\n${card.risks.map((risk) => `- ${risk}`).join('\n')}` : '',
+  ].filter(Boolean).join('\n');
 }
 
 function upsertArtifacts(target: Artifact[], artifacts: Artifact[]): void {
