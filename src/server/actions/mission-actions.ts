@@ -814,9 +814,11 @@ function updateDecisions(
 function finalDeliveryForTurn(turn: LocalTurn): MissionFinalDelivery {
   if (turn.dispatchStatus !== 'completed') return initialFinalDelivery();
   const reportArtifact = turn.artifacts.find((artifact) => artifact.id === `final_report_${turn.id}`);
+  const summaryArtifact = turn.artifacts.find((artifact) => artifact.id === `review_summary_${turn.id}`);
+  const summary = parseReviewSummary(summaryArtifact?.preview);
   const reviewArtifact = turn.artifacts.find((artifact) => artifact.ownerAgentId === 'vera' || artifact.ownerAgentId === 'reviewer');
   const reportText = reportArtifact?.preview ?? '';
-  const confidence = /Reviewer confidence:\s*blocked/i.test(reportText)
+  const confidence = summary?.confidence ?? (/Reviewer confidence:\s*blocked/i.test(reportText)
     ? 'blocked'
     : /Reviewer confidence:\s*pass/i.test(reportText)
       ? 'pass'
@@ -824,22 +826,43 @@ function finalDeliveryForTurn(turn: LocalTurn): MissionFinalDelivery {
         ? 'warning'
         : reviewArtifact
           ? 'pass'
-          : 'unknown';
-  const testsObserved = /Test or verification evidence was mentioned/i.test(reportText);
-  const risks = reportText.includes('No blocking task failures recorded.')
+          : 'unknown');
+  const testsObserved = summary?.testsObserved ?? /Test or verification evidence was mentioned/i.test(reportText);
+  const risks = summary?.risks ?? (reportText.includes('No blocking task failures recorded.')
     ? []
     : reportText
         .split('\n')
         .filter((line) => line.startsWith('- ') && /failed|blocked|error/i.test(line))
-        .map((line) => line.slice(2));
+        .map((line) => line.slice(2)));
   return {
     status: 'ready',
     reportArtifactId: reportArtifact?.id ?? reviewArtifact?.id ?? turn.artifacts.at(-1)?.id ?? null,
-    recommendation: 'accept',
+    recommendation: summary?.recommendation ?? 'accept',
     confidence,
     testsObserved,
     risks,
   };
+}
+
+function parseReviewSummary(text: string | null | undefined): Pick<MissionFinalDelivery, 'confidence' | 'recommendation' | 'testsObserved' | 'risks'> | null {
+  if (!text) return null;
+  try {
+    const parsed = JSON.parse(text) as Partial<MissionFinalDelivery>;
+    const confidence = ['pass', 'warning', 'blocked', 'unknown'].includes(String(parsed.confidence))
+      ? parsed.confidence as MissionFinalDelivery['confidence']
+      : 'unknown';
+    const recommendation = ['accept', 'repair', 'review'].includes(String(parsed.recommendation))
+      ? parsed.recommendation as MissionFinalDelivery['recommendation']
+      : 'review';
+    return {
+      confidence,
+      recommendation,
+      testsObserved: parsed.testsObserved === true,
+      risks: Array.isArray(parsed.risks) ? parsed.risks.filter((risk): risk is string => typeof risk === 'string') : [],
+    };
+  } catch {
+    return null;
+  }
 }
 
 function initialFinalDelivery(): MissionFinalDelivery {
