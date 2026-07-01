@@ -643,6 +643,7 @@ function HandoffCard({ ho, agents, onEdit }) {
   const to = ho.to.replace('@', '');
   const toAgent = Object.values(agents).find(a => a.role === to) || agents.atlas;
   const label = scenarioLabel(ho.scenario);
+  const v2 = ho.handoffV2;
   return (
     <div className="rt-rise" style={{
       background: 'var(--surface)', borderRadius: 'var(--r-card)',
@@ -670,6 +671,40 @@ function HandoffCard({ ho, agents, onEdit }) {
         <div style={{ padding: '4px 16px 16px', display: 'grid', gap: 14 }}>
           <Field label="User intent"><Md text={ho.userIntent} prose={false} /></Field>
           <Field label="Task brief"><Md text={ho.taskBrief} prose={false} /></Field>
+
+          {v2 && (
+            <Field label="Protocol layer">
+              <div style={{ display: 'grid', gap: 8, padding: '9px 11px', borderRadius: 'var(--r-sm)',
+                background: 'var(--surface-2)', border: '1px solid var(--border)' }}>
+                <div className="mono" style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>
+                  {v2.protocolVersion} · {v2.cardId}
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 7 }}>
+                  {[
+                    ['mission', v2.missionId],
+                    ['task', v2.task?.id],
+                    ['from', v2.fromAgent],
+                    ['to', v2.toAgent],
+                  ].map(([k, val]) => (
+                    <span key={k} className="mono" style={{ fontSize: 11, color: 'var(--text-faint)',
+                      padding: '4px 7px', borderRadius: 5, background: 'var(--surface)', border: '1px solid var(--border)' }}>
+                      {k}: <span style={{ color: 'var(--text-muted)' }}>{val}</span>
+                    </span>
+                  ))}
+                </div>
+                {v2.contextPackage?.summary && (
+                  <Md text={v2.contextPackage.summary} prose={false} />
+                )}
+                {(v2.risks || []).length > 0 && (
+                  <div style={{ display: 'grid', gap: 5 }}>
+                    {v2.risks.map((risk, i) => (
+                      <div key={i} style={{ fontSize: 12, color: 'var(--text-muted)' }}>- {risk}</div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </Field>
+          )}
 
           <Field label="📌 Pinned constraints">
             <div style={{ display: 'grid', gap: 6 }}>

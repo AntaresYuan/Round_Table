@@ -84,6 +84,8 @@ describe('Roundtable clean workflow', () => {
     expect(approval.workspacePath).toContain('workspaces/test');
     expect(approval.artifacts.find((artifact) => artifact.id.startsWith('task_vera_'))?.preview)
       .toContain('Previous agent output');
+    expect(approval.artifacts.find((artifact) => artifact.id.startsWith('task_vera_'))?.preview)
+      .toContain('HandoffCard V2');
 
     const history = await listTurns(chat.id);
     expect(history).toHaveLength(1);
