@@ -882,7 +882,25 @@ function App() {
       if (!res.ok || !data.ok) throw new Error(data.error || 'delivery_decision_failed');
       setLocalTurns((turns) => turns.map((turn) => (
         turn.id === turnId
-          ? { ...turn, result: { ...turn.result, mission: data.mission, workflowRun: data.workflowRun } }
+          ? {
+              ...turn,
+              result: {
+                ...turn.result,
+                needsApproval: data.needsApproval,
+                approvalStatus: data.approvalStatus,
+                approvedAt: data.approvedAt,
+                dispatchStatus: data.dispatchStatus,
+                dispatchAdapter: data.dispatchAdapter,
+                dispatchedAt: data.dispatchedAt,
+                dispatchStage: data.dispatchStage,
+                dispatchError: data.dispatchError,
+                dispatchWorkspacePath: data.workspacePath,
+                dispatch: data.records,
+                artifacts: data.artifacts,
+                mission: data.mission,
+                workflowRun: data.workflowRun,
+              },
+            }
           : turn
       )));
     } catch {
