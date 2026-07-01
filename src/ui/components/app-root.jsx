@@ -529,6 +529,11 @@ function App() {
     { enabled: authed && !!activeChatId },
   );
   const liveArtifacts = authed && artifactsQ.data ? artifactsQ.data : null;
+  const missionsQ = trpc.missions.list.useQuery(
+    { chatId: activeChatId ?? '' },
+    { enabled: authed && !!activeChatId },
+  );
+  const liveMissions = authed && missionsQ.data ? missionsQ.data : null;
   const messagesQ = trpc.messages.list.useQuery(
     { chatId: activeChatId ?? '' },
     { enabled: authed && !!activeChatId },
@@ -1048,7 +1053,7 @@ function App() {
                 {notesOpen && !compact && <ResizeHandle onResize={(dx) => setInspectorW((w) => Math.max(300, Math.min(640, w + dx)))} />}
                 {notesOpen && <InspectorPanel tab={inspectorTab} setTab={setInspectorTab} clock={scene.clock} width={compact ? 'min(100vw, 420px)' : inspectorW}
                   agents={agents} scene={scene} live={authed && !!activeChatId} liveArtifacts={liveArtifacts} liveMessages={liveMessages}
-                  liveHandoffs={liveHandoffs} activeChatId={activeChatId} memory={memory}
+                  liveHandoffs={liveHandoffs} liveMissions={liveMissions} activeChatId={activeChatId} memory={memory}
                   localTurns={activeLocalTurns.length ? activeLocalTurns : localTurns} localStatus={localStatus} onApproveLocalTurn={approveLocalTurn}
                   localTurnActions={{ interrupt: interruptLocalTurn, redispatch: redispatchLocalTurn, discard: discardLocalTurn, clarify: answerLocalClarification, approve: approveLocalTurn, delivery: decideLocalDelivery }}
                   onOpenArtifact={setDrawerArt} onAction={onAction} onClose={() => setNotesOpen(false)}

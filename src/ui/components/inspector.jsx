@@ -20,9 +20,9 @@ import { trpc } from '../lib/trpc';
 
 const { useState, useEffect } = React;
 
-function missionDependencyGraph(turns, artifacts) {
+function missionDependencyGraph(turns, artifacts, missions) {
   const turn = turns?.[0];
-  const mission = turn?.result?.mission;
+  const mission = turn?.result?.mission || missions?.[0];
   if (!mission) return null;
   const byId = new Map((artifacts || []).map((artifact) => [artifact.id, artifact]));
   const nodes = (mission.tasks || [])
@@ -220,7 +220,7 @@ function FileRow({ art, agents, onOpen, activeChatId }) {
     </button>
   );
 }
-function InspectorPanel({ tab, setTab, clock, agents, scene, width, onOpenArtifact, onAction, onClose, live, liveArtifacts, liveMessages, liveHandoffs, activeChatId, memory, localTurns, localStatus, onApproveLocalTurn, localTurnActions, onRewrite }) {
+function InspectorPanel({ tab, setTab, clock, agents, scene, width, onOpenArtifact, onAction, onClose, live, liveArtifacts, liveMessages, liveHandoffs, liveMissions, activeChatId, memory, localTurns, localStatus, onApproveLocalTurn, localTurnActions, onRewrite }) {
   const placed = sceneAt(clock).placed;
   const hasLocalTurns = localTurns && localTurns.length > 0;
   const localArtifacts = hasLocalTurns ? liveArtifactsFromTurns(localTurns, agents, localStatus) : [];
@@ -231,7 +231,7 @@ function InspectorPanel({ tab, setTab, clock, agents, scene, width, onOpenArtifa
     : live
     ? (liveArtifacts ?? []).map((a) => ({ ...a, version: a.currentVersion, source: a.source ?? 'generated' }))
     : placed.map((p) => p.art);
-  const liveGraph = hasLocalTurns ? missionDependencyGraph(localTurns, created) : null;
+  const liveGraph = hasLocalTurns || live ? missionDependencyGraph(localTurns, created, liveMissions) : null;
   // The fixture "brief" is demo-only — in live mode there are no user-provided artifacts yet.
   const provided = live || hasLocalTurns ? [] : [RT.ARTIFACTS.brief];
   const notes = meetingNotes(clock);
@@ -282,19 +282,16 @@ function InspectorPanel({ tab, setTab, clock, agents, scene, width, onOpenArtifa
         <MemoryPanel memory={memory} />
       ) : tab === 'deps' ? (
         <div style={{ flex: 1, overflowY: 'auto', padding: '14px 14px 24px' }}>
-          {hasLocalTurns ? (
+          {hasLocalTurns || live ? (
             <DependencyGraphSidebar
               graph={liveGraph}
               agents={agents}
-              chatId={localTurns?.[0]?.id || 'local'}
+              chatId={localTurns?.[0]?.id || activeChatId || 'local'}
               onNodeClick={(node) => {
                 const art = created.find((artifact) => artifact.id === node.artifactId);
                 if (art && onOpenArtifact) onOpenArtifact(art);
               }}
             />
-          ) : live ? (
-            <div style={{ fontSize: 12.5, color: 'var(--text-faint)', fontStyle: 'italic', padding: '4px 2px' }}>
-              The dependency graph isn&rsquo;t wired to live server data yet — local Mission runs show live task/artifact links here.</div>
           ) : (
             <DependencyGraphSidebar
               graph={RT.DEPENDENCY_GRAPH}
