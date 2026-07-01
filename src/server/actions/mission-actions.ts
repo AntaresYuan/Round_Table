@@ -422,22 +422,32 @@ export async function decideFinalDelivery(
   const wantsTests = decision === 'tests';
   return updateMission(turn.missionId, (mission) => {
     const repairTaskId = `repair_final_${turn.id}`;
+    const testTaskId = `test_final_${turn.id}`;
     const needsRepairTask = decision === 'repair' && !mission.tasks.some((task) => task.id === repairTaskId);
-    const tasks = needsRepairTask
-      ? [
-          ...mission.tasks,
-          {
-            id: repairTaskId,
-            stageId: 'repair',
-            title: 'Repair final delivery issues',
-            assignee: '@fixer',
-            owner: 'fixer',
-            status: 'pending' as const,
-            deps: mission.tasks.filter((task) => task.stageId === 'review').map((task) => task.id),
-            artifactIds: [],
-          },
-        ]
-      : mission.tasks;
+    const needsTestTask = wantsTests && !mission.tasks.some((task) => task.id === testTaskId);
+    const tasks = [
+      ...mission.tasks,
+      ...(needsRepairTask ? [{
+        id: repairTaskId,
+        stageId: 'repair',
+        title: 'Repair final delivery issues',
+        assignee: '@fixer',
+        owner: 'fixer',
+        status: 'pending' as const,
+        deps: mission.tasks.filter((task) => task.stageId === 'review').map((task) => task.id),
+        artifactIds: [],
+      }] : []),
+      ...(needsTestTask ? [{
+        id: testTaskId,
+        stageId: 'review',
+        title: 'Collect final test evidence',
+        assignee: '@vera',
+        owner: 'vera',
+        status: 'pending' as const,
+        deps: mission.tasks.filter((task) => task.stageId !== 'review').map((task) => task.id),
+        artifactIds: [],
+      }] : []),
+    ];
     return {
       ...mission,
       currentStageId: decision === 'repair' ? 'repair' : mission.currentStageId,
@@ -445,6 +455,8 @@ export async function decideFinalDelivery(
       stages: mission.stages.map((stage) =>
         stage.id === 'repair' && needsRepairTask
           ? { ...stage, status: 'active', taskIds: [...stage.taskIds, repairTaskId] }
+          : stage.id === 'review' && needsTestTask
+            ? { ...stage, status: 'active', taskIds: [...stage.taskIds, testTaskId] }
           : stage,
       ),
       finalDelivery: {
