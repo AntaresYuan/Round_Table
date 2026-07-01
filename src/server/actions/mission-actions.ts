@@ -391,6 +391,58 @@ export async function listMissions(actor: Actor, chatId?: string | undefined): P
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
+export async function rejectHandoff(actor: Actor, handoffId: string): Promise<Mission> {
+  const data = await readData();
+  const handoff = data.handoffs.find((item) => item.ownerId === actor.id && item.id === handoffId);
+  if (!handoff) throw new Error('handoff_not_found');
+  const card = handoff.card?.['handoffV2'] as HandoffCardV2 | undefined;
+  if (!card?.missionId || !card.task?.id) throw new Error('handoff_not_rejectable');
+
+  const mission = data.missions.find((item) => item.ownerId === actor.id && item.id === card.missionId);
+  if (!mission) throw new Error('mission_not_found');
+  const repairTaskId = `repair_handoff_${card.task.id}`;
+  const next = await updateMission(mission.id, (current) => {
+    const needsRepairTask = !current.tasks.some((task) => task.id === repairTaskId);
+    return {
+      ...current,
+      currentStageId: 'repair',
+      tasks: needsRepairTask
+        ? [
+            ...current.tasks,
+            {
+              id: repairTaskId,
+              stageId: 'repair',
+              title: `Repair handoff for ${card.task.title}`,
+              assignee: '@fixer',
+              owner: 'fixer',
+              status: 'pending' as const,
+              deps: [card.task.id],
+              artifactIds: [],
+            },
+          ]
+        : current.tasks,
+      stages: current.stages.map((stage) =>
+        stage.id === 'repair' && needsRepairTask
+          ? { ...stage, status: 'active', taskIds: [...stage.taskIds, repairTaskId] }
+          : stage,
+      ),
+      decisions: [
+        ...current.decisions,
+        {
+          id: `decision_handoff_${handoff.id}_reject`,
+          stageId: 'repair',
+          actor: 'user',
+          summary: `Handoff rejected; repair follow-up created for ${card.task.title}.`,
+          createdAt: nowIso(),
+        },
+      ],
+      updatedAt: nowIso(),
+    };
+  });
+  if (!next) throw new Error('mission_not_found');
+  return next;
+}
+
 export async function updateMissionForPlannedTurn(turn: LocalTurn): Promise<Mission | null> {
   return updateMission(turn.missionId, (mission) => syncMissionWithTurn(mission, turn, { artifactIds: [] }));
 }
