@@ -164,6 +164,12 @@ function preferredAgentAdapterRequest() {
   return {};
 }
 
+function randomClientId(prefix) {
+  const uuid = globalThis.crypto?.randomUUID?.().replace(/-/g, '');
+  const fallback = `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
+  return `${prefix}-${(uuid || fallback).slice(0, 16)}`;
+}
+
 // #15 AC: agent color persistence across sessions. Custom agents (id `a-…`)
 // live in RT.AGENTS at runtime; mirror them to localStorage and rehydrate on boot.
 function persistCustomAgents() {
@@ -441,18 +447,17 @@ function App() {
   const [localTurns, setLocalTurns] = useState([]);
   const [localStatus, setLocalStatus] = useState('idle');
   // Persisted so a page refresh restores this chat's live turns from history
-  // instead of starting an empty session. Some embedded browsers can deny
-  // localStorage, so use a stable dev fallback instead of a fresh random id.
+  // instead of starting an empty session.
   const [localChatId] = useState(() => {
     const key = 'roundtable.localChatId';
-    const fallback = 'roundtable-local-dev';
     try {
       const existing = window.localStorage.getItem(key);
       if (existing) return existing;
-      window.localStorage.setItem(key, fallback);
-      return fallback;
+      const next = randomClientId('roundtable-local');
+      window.localStorage.setItem(key, next);
+      return next;
     } catch {
-      return fallback;
+      return randomClientId('roundtable-local');
     }
   });
   // P3.2: live chats when signed in; fall back to fixtures for the logged-out demo.
@@ -632,15 +637,11 @@ function App() {
   const loadLocalHistory = useCallback(async () => {
     if (!turnChatId) return;
     try {
-      const res = await fetch(`/api/orchestrator/history?chatId=${turnChatId}`, { cache: 'no-store' });
+      const params = new URLSearchParams({ chatId: turnChatId });
+      const res = await fetch(`/api/orchestrator/history?${params.toString()}`, { cache: 'no-store' });
       const data = await res.json();
       if (!res.ok || !data.ok) return;
-      let storedTurns = data.turns || [];
-      if (!authed && storedTurns.length === 0) {
-        const fallbackRes = await fetch('/api/orchestrator/history', { cache: 'no-store' });
-        const fallbackData = await fallbackRes.json();
-        if (fallbackRes.ok && fallbackData.ok) storedTurns = fallbackData.turns || [];
-      }
+      const storedTurns = data.turns || [];
       const turns = storedTurns.map(storedTurnToLiveTurn);
       setLocalTurns(turns);
       setSelectedLocalTurnId((current) => (
@@ -651,7 +652,7 @@ function App() {
     } catch {
       // Local history is a dev convenience; a fresh turn should still work.
     }
-  }, [authed, turnChatId]);
+  }, [turnChatId]);
 
   useEffect(() => {
     if (authStatus === 'loading') return;
@@ -712,7 +713,7 @@ function App() {
     return created;
   };
   const sendLocalTurn = async (message, turnId, chatIdOverride, workflowTemplateId) => {
-    const id = turnId || 'live-' + Date.now();
+    const id = turnId || randomClientId('live');
     const createdAt = new Date().toISOString();
     setInspectorTab('chat');
     setNotesOpen(true);

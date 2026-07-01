@@ -54,6 +54,7 @@ export type ApprovalInput = {
   decision: 'approve' | 'reject';
   autoDispatch?: boolean | undefined;
   agentAdapter?: string | undefined;
+  actor?: Actor | null | undefined;
   // When true, kick off dispatch in the background and return immediately with
   // dispatchStatus 'running' — the client then polls /history for live progress.
   // When false/omitted, await the full run (used by tests and the CLI).
@@ -63,11 +64,17 @@ export type ApprovalInput = {
 export type DispatchInput = {
   turnId: string;
   agentAdapter?: string | undefined;
+  actor?: Actor | null | undefined;
 };
 
 export type FinalDeliveryInput = {
   turnId: string;
   decision: 'accept' | 'repair' | 'tests';
+  actor?: Actor | null | undefined;
+};
+
+type TurnAccess = {
+  actor?: Actor | null | undefined;
 };
 
 export async function createTurn(input: CreateTurnInput): Promise<TurnResponse> {
@@ -261,7 +268,7 @@ export async function answerClarification(input: {
   answers: ClarifyAnswer[];
   actor?: Actor | null | undefined;
 }): Promise<TurnResponse> {
-  const existing = await getTurn(input.turnId);
+  const existing = await getTurn(input.turnId, input);
   if (!existing) throw new ActionError('turn_not_found', 404);
   if (!existing.needsClarification) throw new ActionError('turn_not_awaiting_clarification', 400);
 
@@ -304,20 +311,23 @@ export async function answerClarification(input: {
   return turnResponse(turnWithWorkflowRun);
 }
 
-export async function listTurns(chatId?: string | undefined): Promise<LocalTurn[]> {
-  return mutateData((data) =>
-    data.turns
-      .filter((turn) => !chatId || turn.localChatId === chatId)
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
-  );
+export async function listTurns(chatId?: string | undefined, access?: TurnAccess | undefined): Promise<LocalTurn[]> {
+  const data = await readData();
+  return data.turns
+    .filter((turn) => !chatId || turn.localChatId === chatId)
+    .filter((turn) => canAccessTurn(turn, access))
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
-export async function getTurn(turnId: string): Promise<LocalTurn | null> {
-  return mutateData((data) => data.turns.find((turn) => turn.id === turnId) ?? null);
+export async function getTurn(turnId: string, access?: TurnAccess | undefined): Promise<LocalTurn | null> {
+  const data = await readData();
+  const turn = data.turns.find((item) => item.id === turnId) ?? null;
+  if (!turn || !canAccessTurn(turn, access)) return null;
+  return turn;
 }
 
 export async function approveTurn(input: ApprovalInput): Promise<DispatchResponse> {
-  const turn = await getTurn(input.turnId);
+  const turn = await getTurn(input.turnId, input);
   if (!turn) throw new ActionError('turn_not_found', 404);
   if (input.decision === 'reject') {
     const rejected = await updateTurn(input.turnId, (current) => ({
@@ -327,14 +337,14 @@ export async function approveTurn(input: ApprovalInput): Promise<DispatchRespons
       dispatchStatus: 'failed',
       dispatchStage: 'rejected',
       dispatchError: 'rejected_by_user',
-    }));
+    }), input);
     const rejectedTurn = requireTurn(rejected);
     const mission = await setMissionRejected(rejectedTurn);
     const withMission = await updateTurn(rejectedTurn.id, (current) => ({
       ...current,
       mission: mission ?? current.mission,
       workflowRun: workflowRunForTurn({ ...current, mission: mission ?? current.mission }),
-    }));
+    }), input);
     return dispatchResponse(requireTurn(withMission));
   }
 
@@ -344,14 +354,14 @@ export async function approveTurn(input: ApprovalInput): Promise<DispatchRespons
     approvalStatus: 'approved',
     approvedAt: nowIso(),
     dispatchStage: 'approved',
-  }));
+  }), input);
   const approvedTurn = requireTurn(approved);
   const mission = await updateMissionForPlannedTurn(approvedTurn);
   const synced = await updateTurn(approvedTurn.id, (current) => ({
     ...current,
     mission: mission ?? current.mission,
     workflowRun: workflowRunForTurn({ ...current, mission: mission ?? current.mission }),
-  }));
+  }), input);
   const next = requireTurn(synced);
   if (input.autoDispatch) {
     if (input.background) {
@@ -368,32 +378,32 @@ export async function approveTurn(input: ApprovalInput): Promise<DispatchRespons
           ...runTurn,
           workflowRun: workflowRunForTurn(runTurn),
         };
-      });
+      }, input);
       const runningTurn = requireTurn(running);
       const runningMission = await updateMissionForDispatch(runningTurn);
       const runningSynced = await updateTurn(next.id, (current) => ({
         ...current,
         mission: runningMission ?? current.mission,
         workflowRun: workflowRunForTurn({ ...current, mission: runningMission ?? current.mission }),
-      }));
-      void dispatchTurn({ turnId: next.id, agentAdapter: input.agentAdapter }).catch(async (error) => {
+      }), input);
+      void dispatchTurn({ turnId: next.id, agentAdapter: input.agentAdapter, actor: input.actor }).catch(async (error) => {
         const message = error instanceof Error ? error.message : 'dispatch_failed';
         await updateTurn(next.id, (current) => ({
           ...current,
           dispatchStatus: 'failed',
           dispatchStage: 'failed',
           dispatchError: message,
-        })).catch(() => {});
+        }), input).catch(() => {});
       });
       return dispatchResponse(requireTurn(runningSynced));
     }
-    return dispatchTurn({ turnId: next.id, agentAdapter: input.agentAdapter });
+    return dispatchTurn({ turnId: next.id, agentAdapter: input.agentAdapter, actor: input.actor });
   }
   return dispatchResponse(next);
 }
 
 export async function dispatchTurn(input: DispatchInput): Promise<DispatchResponse> {
-  const turn = await getTurn(input.turnId);
+  const turn = await getTurn(input.turnId, input);
   if (!turn) throw new ActionError('turn_not_found', 404);
   if (turn.dispatchStatus === 'completed' && turn.dispatch.length > 0) return dispatchResponse(turn);
 
@@ -406,7 +416,7 @@ export async function dispatchTurn(input: DispatchInput): Promise<DispatchRespon
     dispatchStage: 'dispatch',
     dispatchError: null,
     dispatchWorkspacePath: workspace,
-  }));
+  }), input);
 
   // Per-task side data the scheduler's lean TaskResult doesn't carry: the agent
   // event stream and the produced artifact, keyed by task id for later assembly.
@@ -541,15 +551,15 @@ export async function dispatchTurn(input: DispatchInput): Promise<DispatchRespon
           },
         },
       };
-    });
-    const current = await getTurn(turn.id);
+    }, input);
+    const current = await getTurn(turn.id, input);
     if (current) {
       const mission = await updateMissionForDispatch(current);
       await updateTurn(turn.id, (latest) => ({
         ...latest,
         mission: mission ?? latest.mission,
         workflowRun: workflowRunForTurn({ ...latest, mission: mission ?? latest.mission }),
-      }));
+      }), input);
     }
   };
 
@@ -660,14 +670,14 @@ export async function dispatchTurn(input: DispatchInput): Promise<DispatchRespon
         },
       },
     };
-  });
+  }, input);
   const completedTurn = requireTurn(completed);
   const mission = await updateMissionForDispatch(completedTurn);
   const finalTurn = requireTurn(await updateTurn(completedTurn.id, (current) => ({
     ...current,
     mission: mission ?? current.mission,
     workflowRun: workflowRunForTurn({ ...current, mission: mission ?? current.mission }),
-  })));
+  }), input));
   const finalChatId = finalTurn.localChatId;
   if (finalChatId) {
     await mutateData((data) => {
@@ -678,25 +688,25 @@ export async function dispatchTurn(input: DispatchInput): Promise<DispatchRespon
   return dispatchResponse(finalTurn);
 }
 
-export async function interruptTurn(turnId: string): Promise<DispatchResponse> {
+export async function interruptTurn(turnId: string, access?: TurnAccess | undefined): Promise<DispatchResponse> {
   const turn = await updateTurn(turnId, (current) => ({
     ...current,
     dispatchStatus: 'failed',
     dispatchStage: 'interrupted',
     dispatchError: 'interrupted_by_user',
-  }));
+  }), access);
   const interrupted = requireTurn(turn);
   const mission = await updateMissionForDispatch(interrupted);
   const synced = await updateTurn(interrupted.id, (current) => ({
     ...current,
     mission: mission ?? current.mission,
     workflowRun: workflowRunForTurn({ ...current, mission: mission ?? current.mission }),
-  }));
+  }), access);
   return dispatchResponse(requireTurn(synced));
 }
 
 export async function decideTurnFinalDelivery(input: FinalDeliveryInput): Promise<DispatchResponse> {
-  const turn = await getTurn(input.turnId);
+  const turn = await getTurn(input.turnId, input);
   if (!turn) throw new ActionError('turn_not_found', 404);
   if (turn.dispatchStatus !== 'completed') throw new ActionError('delivery_not_ready', 400);
   const mission = await decideFinalDelivery(turn, input.decision);
@@ -704,7 +714,7 @@ export async function decideTurnFinalDelivery(input: FinalDeliveryInput): Promis
     ...current,
     mission: mission ?? current.mission,
     workflowRun: workflowRunForTurn({ ...current, mission: mission ?? current.mission }),
-  }));
+  }), input);
   return dispatchResponse(requireTurn(updated));
 }
 
@@ -761,12 +771,14 @@ function dispatchResponse(turn: LocalTurn) {
 async function updateTurn(
   turnId: string,
   update: (turn: LocalTurn) => LocalTurn,
+  access?: TurnAccess | undefined,
 ): Promise<LocalTurn | null> {
   return mutateData((data) => {
     const index = data.turns.findIndex((turn) => turn.id === turnId);
     if (index === -1) return null;
     const current = data.turns[index];
     if (!current) return null;
+    if (!canAccessTurn(current, access)) return null;
     const next = update(current);
     data.turns[index] = next;
     return next;
@@ -776,6 +788,12 @@ async function updateTurn(
 function requireTurn(turn: LocalTurn | null): LocalTurn {
   if (!turn) throw new ActionError('turn_not_found', 404);
   return turn;
+}
+
+function canAccessTurn(turn: LocalTurn, access?: TurnAccess | undefined): boolean {
+  if (!access || !Object.prototype.hasOwnProperty.call(access, 'actor') || access.actor === undefined) return true;
+  if (access.actor) return turn.ownerId === access.actor.id;
+  return turn.ownerId === null;
 }
 
 function intakeFromMessage(message: string): Intake {

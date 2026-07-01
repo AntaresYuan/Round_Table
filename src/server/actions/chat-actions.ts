@@ -1,4 +1,4 @@
-import { id, mutateData, nowIso } from '../store.js';
+import { id, mutateData, nowIso, readData } from '../store.js';
 import type { Actor, Chat, Message } from '../types.js';
 import { getWorkbench } from './workbench-actions.js';
 
@@ -8,15 +8,15 @@ export type CreateChatInput = {
 };
 
 export async function listChats(actor: Actor): Promise<Chat[]> {
-  return mutateData((data) =>
-    data.chats
-      .filter((chat) => chat.ownerId === actor.id)
-      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
-  );
+  const data = await readData();
+  return data.chats
+    .filter((chat) => chat.ownerId === actor.id)
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
 export async function getChat(actor: Actor, chatId: string): Promise<Chat | null> {
-  return mutateData((data) => data.chats.find((chat) => chat.ownerId === actor.id && chat.id === chatId) ?? null);
+  const data = await readData();
+  return data.chats.find((chat) => chat.ownerId === actor.id && chat.id === chatId) ?? null;
 }
 
 export async function createChat(actor: Actor, input: CreateChatInput): Promise<Chat> {
@@ -57,11 +57,10 @@ export async function deleteChat(actor: Actor, chatId: string): Promise<{ id: st
 
 export async function listMessages(actor: Actor, chatId: string): Promise<Message[]> {
   await requireChat(actor, chatId);
-  return mutateData((data) =>
-    data.messages
-      .filter((message) => message.ownerId === actor.id && message.chatId === chatId)
-      .sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
-  );
+  const data = await readData();
+  return data.messages
+    .filter((message) => message.ownerId === actor.id && message.chatId === chatId)
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
 export async function createMessage(actor: Actor, input: { chatId: string; content: string }): Promise<Message> {

@@ -2,12 +2,20 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { answerClarification, approveTurn, createTurn, interruptTurn } from '../src/server/actions/turn-actions.js';
+import {
+  answerClarification,
+  approveTurn,
+  createTurn,
+  getTurn,
+  interruptTurn,
+  listTurns,
+} from '../src/server/actions/turn-actions.js';
 import { resetData } from '../src/server/store.js';
 import type { Actor } from '../src/server/types.js';
 
 let tempDir = '';
 const actor: Actor = { id: 'test-user', email: 'test@roundtable.local', name: 'Test User' };
+const otherActor: Actor = { id: 'other-user', email: 'other@roundtable.local', name: 'Other User' };
 
 beforeEach(async () => {
   tempDir = await mkdtemp(join(tmpdir(), 'roundtable-turn-'));
@@ -132,5 +140,28 @@ describe('dispatchTurn — DAG scheduler integration', () => {
     expect(interrupted.dispatchStage).toBe('interrupted');
     expect(interrupted.mission?.status).toBe('failed');
     expect(interrupted.workflowRun).not.toBeNull();
+  });
+
+  it('scopes turn reads and mutations to the route actor when provided', async () => {
+    const owned = await createTurn({
+      actor,
+      chatId: 'shared-chat',
+      message: 'Build a waitlist page and review it.',
+    });
+    const anonymous = await createTurn({
+      chatId: 'shared-chat',
+      message: 'Build a public local-only task and review it.',
+    });
+
+    expect((await listTurns('shared-chat', { actor })).map((turn) => turn.id)).toEqual([owned.id]);
+    expect((await listTurns('shared-chat', { actor: otherActor }))).toHaveLength(0);
+    expect((await listTurns('shared-chat', { actor: null })).map((turn) => turn.id)).toEqual([anonymous.id]);
+    expect(await getTurn(owned.id, { actor: otherActor })).toBeNull();
+
+    await expect(approveTurn({
+      actor: otherActor,
+      turnId: owned.id,
+      decision: 'approve',
+    })).rejects.toMatchObject({ code: 'turn_not_found', status: 404 });
   });
 });

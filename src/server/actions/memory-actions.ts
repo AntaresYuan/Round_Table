@@ -1,4 +1,4 @@
-import { id, mutateData, nowIso } from '../store.js';
+import { id, mutateData, nowIso, readData } from '../store.js';
 import type { Actor, UserProfile, WorkbenchPin } from '../types.js';
 import { getWorkbench } from './workbench-actions.js';
 
@@ -44,11 +44,10 @@ export async function updateUserProfile(
 
 export async function listWorkbenchPins(actor: Actor, workbenchId: string): Promise<WorkbenchPin[]> {
   await ensureWorkbench(actor, workbenchId);
-  return mutateData((data) =>
-    data.workbenchPins
-      .filter((pin) => pin.userId === actor.id && pin.workbenchId === workbenchId)
-      .sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
-  );
+  const data = await readData();
+  return data.workbenchPins
+    .filter((pin) => pin.userId === actor.id && pin.workbenchId === workbenchId)
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
 export async function pinWorkbench(actor: Actor, input: { workbenchId: string; content: string }): Promise<WorkbenchPin> {

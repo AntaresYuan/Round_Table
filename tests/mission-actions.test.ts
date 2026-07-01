@@ -2,7 +2,13 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { getMission, getMissionByTurn, listMissions, listWorkflowTemplates } from '../src/server/actions/mission-actions.js';
+import {
+  getMission,
+  getMissionByTurn,
+  listMissions,
+  listWorkflowTemplates,
+  selectWorkflowTemplate,
+} from '../src/server/actions/mission-actions.js';
 import { approveTurn, createTurn, decideTurnFinalDelivery } from '../src/server/actions/turn-actions.js';
 import { resetData } from '../src/server/store.js';
 import type { Actor } from '../src/server/types.js';
@@ -54,6 +60,11 @@ describe('Mission P0 migration', () => {
     ]);
     expect(featureBuilder?.stages.find((stage) => stage.id === 'plan')?.gate.kind).toBe('plan_approval');
     expect(featureBuilder?.stages.find((stage) => stage.id === 'review')?.requiredCapabilities).toContain('review.quality_gate');
+  });
+
+  it('selects non-English workflow templates without relying on word boundaries', () => {
+    expect(selectWorkflowTemplate('修复登录报错问题').id).toBe('wf-bug-fixer');
+    expect(selectWorkflowTemplate('熟悉这个代码库架构').id).toBe('wf-codebase-onboarding');
   });
 
   it('creates a Mission from a turn and advances it through dispatch', async () => {

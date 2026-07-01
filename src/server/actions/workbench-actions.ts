@@ -1,5 +1,5 @@
 import { resolve } from 'node:path';
-import { id, mutateData, nowIso } from '../store.js';
+import { id, mutateData, nowIso, readData } from '../store.js';
 import type { Actor, Workbench } from '../types.js';
 
 export type CreateWorkbenchInput = {
@@ -9,11 +9,10 @@ export type CreateWorkbenchInput = {
 };
 
 export async function listWorkbenches(actor: Actor): Promise<Workbench[]> {
-  return mutateData((data) =>
-    data.workbenches
-      .filter((workbench) => workbench.ownerId === actor.id)
-      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
-  );
+  const data = await readData();
+  return data.workbenches
+    .filter((workbench) => workbench.ownerId === actor.id)
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
 export async function createWorkbench(actor: Actor, input: CreateWorkbenchInput): Promise<Workbench> {
@@ -40,7 +39,6 @@ function defaultWorkspacePath(): string {
 }
 
 export async function getWorkbench(actor: Actor, workbenchId: string): Promise<Workbench | null> {
-  return mutateData((data) =>
-    data.workbenches.find((workbench) => workbench.ownerId === actor.id && workbench.id === workbenchId) ?? null,
-  );
+  const data = await readData();
+  return data.workbenches.find((workbench) => workbench.ownerId === actor.id && workbench.id === workbenchId) ?? null;
 }
