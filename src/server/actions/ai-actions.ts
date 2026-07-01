@@ -83,20 +83,81 @@ function lowerFirst(text: string): string {
 
 export async function suggestTasks(actor: Actor): Promise<Array<{ title: string; goal: string }>> {
   const chats = await listChats(actor);
-  if (chats.length > 0) {
-    return chats.slice(0, 3).map((chat) => ({
-      title: `Continue ${chat.title}`,
-      goal: `Continue the current work in ${chat.title} and produce the next usable artifact.`,
-    }));
-  }
-  return [
-    {
-      title: 'Build a waitlist flow',
-      goal: 'Create a small waitlist experience with validation, persistence, and a review pass.',
-    },
-    {
-      title: 'Review a landing page',
-      goal: 'Review the landing page structure, identify risks, and produce prioritized fixes.',
-    },
-  ];
+  const recentText = chats.slice(0, 8).map((chat) => chat.title).join(' ');
+  return suggestFromLibrary(recentText).slice(0, 3).map((item) => ({
+    title: item.title,
+    goal: item.goal,
+  }));
+}
+
+const SCENE_LIBRARY = [
+  {
+    title: 'Pricing page',
+    goal: 'Build a pricing page with monthly/annual billing toggle, plan comparison, FAQ, and conversion-focused CTA.',
+    tags: ['pricing', 'billing', 'subscription', 'plan', 'saas', 'landing'],
+  },
+  {
+    title: 'Waitlist flow',
+    goal: 'Create a waitlist flow with email capture, validation, persistence, and a reviewed confirmation state.',
+    tags: ['waitlist', 'signup', 'email', 'landing', 'launch'],
+  },
+  {
+    title: 'CSV export endpoint',
+    goal: 'Build a REST endpoint for CSV export with filters, authorization checks, streaming response, and error handling.',
+    tags: ['api', 'csv', 'export', 'endpoint', 'backend', 'download'],
+  },
+  {
+    title: 'Auth settings',
+    goal: 'Implement account settings for profile, password, session management, and security review.',
+    tags: ['auth', 'login', 'account', 'settings', 'security', 'profile'],
+  },
+  {
+    title: 'Dashboard analytics',
+    goal: 'Build an analytics dashboard with metric cards, trend charts, filters, and empty/loading states.',
+    tags: ['dashboard', 'analytics', 'metrics', 'chart', 'admin'],
+  },
+  {
+    title: 'Checkout flow',
+    goal: 'Implement a checkout flow with cart summary, payment handoff, validation, and post-payment confirmation.',
+    tags: ['checkout', 'payment', 'stripe', 'cart', 'commerce'],
+  },
+  {
+    title: 'Onboarding wizard',
+    goal: 'Create a multi-step onboarding wizard with progress, validation, saved state, and completion summary.',
+    tags: ['onboarding', 'wizard', 'setup', 'form', 'user'],
+  },
+  {
+    title: 'Dark mode',
+    goal: 'Add dark mode across the app with persisted preference, token updates, and visual regression review.',
+    tags: ['dark', 'theme', 'design', 'tokens', 'ui'],
+  },
+  {
+    title: 'Admin table',
+    goal: 'Build an admin data table with search, filters, sorting, pagination, row actions, and loading/error states.',
+    tags: ['admin', 'table', 'search', 'filter', 'crud'],
+  },
+  {
+    title: 'Codebase onboarding',
+    goal: 'Map this codebase into modules, data flow, key entrypoints, risks, and recommended starter tasks.',
+    tags: ['codebase', 'onboarding', 'architecture', 'map', 'repo'],
+  },
+];
+
+function suggestFromLibrary(context: string) {
+  const tokens = tokenize(context);
+  if (tokens.size === 0) return SCENE_LIBRARY;
+  return [...SCENE_LIBRARY].sort((a, b) => scoreScene(b, tokens) - scoreScene(a, tokens));
+}
+
+function scoreScene(scene: { title: string; goal: string; tags: string[] }, tokens: Set<string>): number {
+  return scene.tags.reduce((score, tag) => score + (tokens.has(tag) ? 3 : 0), 0)
+    + intersectionSize(tokenize(`${scene.title} ${scene.goal}`), tokens);
+}
+
+function tokenize(text: string): Set<string> {
+  return new Set(text.toLowerCase().match(/[a-z0-9]+|[\u4e00-\u9fff]+/g) ?? []);
+}
+
+function intersectionSize(a: Set<string>, b: Set<string>): number {
+  return [...a].filter((token) => b.has(token)).length;
 }
