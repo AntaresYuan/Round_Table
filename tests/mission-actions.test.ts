@@ -96,8 +96,12 @@ describe('Mission P0 migration', () => {
     expect(JSON.parse(result.artifacts.find((artifact) => artifact.id === `review_summary_${turn.id}`)?.preview ?? '{}')?.confidence)
       .toBe('pass');
     expect(result.workflowRun?.stageStates.plan?.status).toBe('done');
+    expect(result.workflowRun?.stageStates.build?.status).toBe('done');
     expect(result.workflowRun?.stageStates.review?.status).toBe('done');
-    expect(result.workflowRun?.stageStates.ship?.status).toBe('active');
+    expect(result.workflowRun?.stageStates.ship?.status).toBe('done');
+    expect(result.workflowRun?.activeStageId).toBe('ship');
+    expect(result.workflowRun?.stageStates.build?.seatRuns).toHaveLength(1);
+    expect(result.workflowRun?.stageStates.build?.seatRuns?.every((seat) => seat.status === 'done')).toBe(true);
     expect(result.mission?.artifactIds.length).toBeGreaterThan(0);
 
     const testsRequested = await decideTurnFinalDelivery({ turnId: turn.id, decision: 'tests' });

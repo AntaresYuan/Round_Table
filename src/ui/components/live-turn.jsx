@@ -263,7 +263,7 @@ function LocalLiveTurn({ turn, agents, turnActions, showPreview }) {
                   onHandoff={null}
                 />
               )}
-              {turn.result.workflow && turn.result.workflowRun ? (
+              {turn.result.workflow && turn.result.workflowRun && (
                 <StageCards
                   workflow={turn.result.workflow}
                   workflowRun={turn.result.workflowRun}
@@ -271,7 +271,8 @@ function LocalLiveTurn({ turn, agents, turnActions, showPreview }) {
                   agents={agents}
                   dispatchStatus={turn.result.dispatchStatus}
                 />
-              ) : ((completed || failed || running || interrupted) && !(interrupted && turn.discarded) && (
+              )}
+              {(completed || failed || running || interrupted) && !(interrupted && turn.discarded) && (
                 <LocalResultCard
                   artifacts={artifacts}
                   dispatchStatus={turn.result.dispatchStatus}
@@ -283,7 +284,7 @@ function LocalLiveTurn({ turn, agents, turnActions, showPreview }) {
                   mission={turn.result.mission}
                   onDecideDelivery={turnActions?.delivery ? (decision) => turnActions.delivery(turn.id, decision) : null}
                 />
-              ))}
+              )}
             </div>
           )}
         </div>

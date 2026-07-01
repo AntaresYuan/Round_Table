@@ -578,12 +578,13 @@ export function workflowRunFromMission(mission: Mission, template: WorkflowTempl
           taskIds.includes(task.id)
           && (task.owner === agentId || task.assignee.replace(/^@/, '') === agentId || task.assignee.replace(/^@/, '') === (seatItem.ref.kind === 'role' ? seatItem.ref.role : 'user')),
         );
+        if (ownedTasks.length === 0) return null;
         return {
           agentId,
           status: aggregateTaskStatus(ownedTasks),
           artifactIds: ownedTasks.flatMap((task) => task.artifactIds),
         };
-      }),
+      }).filter((seatRun): seatRun is NonNullable<typeof seatRun> => seatRun !== null),
     };
   }
 
@@ -966,7 +967,7 @@ function stageStatusFromTasks(
   if (stage.id === 'intake') return 'done';
   if (stage.id === 'clarify') return turn.needsClarification ? 'active' : 'done';
   if (stage.id === 'ship') {
-    if (turn.dispatchStatus === 'completed') return 'active';
+    if (turn.dispatchStatus === 'completed') return 'done';
     if (turn.dispatchStatus === 'failed') return 'blocked';
     return 'pending';
   }
