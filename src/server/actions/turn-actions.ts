@@ -608,7 +608,7 @@ export async function dispatchTurn(input: DispatchInput): Promise<DispatchRespon
   );
   const artifacts: Artifact[] = failed
     ? runArtifacts
-    : [...runArtifacts, finalReportArtifact(turn, runArtifacts, records)];
+    : [...runArtifacts, reviewerSummaryArtifact(turn, runArtifacts, records), finalReportArtifact(turn, runArtifacts, records)];
   // Persist any fixer tasks the scheduler derived at runtime back into the plan,
   // so the UI (roundtable + todo list, which read plan.tasks) shows the fix pass
   // — front and back stay in sync on the real executed graph.
@@ -1060,6 +1060,37 @@ function finalReportArtifact(
     uri: `turn://${turn.id}/final-report`,
     preview: report,
     code: null,
+    createdAt: nowIso(),
+  };
+}
+
+function reviewerSummaryArtifact(
+  turn: LocalTurn,
+  artifacts: Artifact[],
+  records: DispatchRecord[],
+): Artifact {
+  const failedRecords = records.filter((record) => record.status === 'failed' || record.status === 'blocked');
+  const reviewerArtifacts = artifacts.filter((artifact) =>
+    artifact.ownerAgentId === 'vera' || artifact.ownerAgentId === 'reviewer',
+  );
+  const testsObserved = artifacts.some((artifact) => /test|spec|review|verify/i.test(`${artifact.title}\n${artifact.preview ?? ''}`));
+  const summary = {
+    goal: turn.message,
+    confidence: failedRecords.length > 0 ? 'blocked' : reviewerArtifacts.length > 0 ? 'pass' : 'warning',
+    recommendation: failedRecords.length > 0 ? 'repair' : 'accept',
+    testsObserved,
+    risks: failedRecords.map((record) => `${record.taskId}: ${record.error ?? record.status}`),
+  };
+  return {
+    id: `review_summary_${turn.id}`,
+    chatId: turn.localChatId ?? `local-${turn.id}`,
+    kind: 'spec',
+    title: `reports/${turn.id}-review-summary.json`,
+    ownerAgentId: 'vera',
+    version: 1,
+    uri: `turn://${turn.id}/review-summary`,
+    preview: JSON.stringify(summary, null, 2),
+    code: JSON.stringify(summary, null, 2),
     createdAt: nowIso(),
   };
 }
