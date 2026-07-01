@@ -192,7 +192,11 @@ function NewTaskModal({ workbench, members, agents, onClose, onCreate }) {
   }));
   const selectedTemplate = missionTemplates.find((template) => template.id === workflowTemplateId) || missionTemplates[0];
   // Personalized suggestions when signed in (+ LLM key); static fallback otherwise.
-  const examples = suggestQ.data ?? ['A pricing page with monthly/annual toggle', 'A REST endpoint for CSV export', 'Dark mode across the app'];
+  const examples = suggestQ.data ?? [
+    { title: 'Pricing page', goal: 'Build a pricing page with monthly/annual billing toggle, plan comparison, FAQ, and conversion-focused CTA.' },
+    { title: 'CSV export endpoint', goal: 'Build a REST endpoint for CSV export with filters, authorization checks, streaming response, and error handling.' },
+    { title: 'Dark mode', goal: 'Add dark mode across the app with persisted preference, token updates, and visual regression review.' },
+  ];
   return (
     <Modal title="New Mission" sub={`${workbench?.name} will run a real workflow from this goal`} icon="plus" onClose={onClose} width={680}
       footer={<><Btn onClick={onClose}>Cancel</Btn><Btn primary disabled={!goal.trim()} onClick={() => onCreate({ goal, workflowTemplateId })}>Start Mission</Btn></>}>
@@ -209,8 +213,8 @@ function NewTaskModal({ workbench, members, agents, onClose, onCreate }) {
       </div>
       <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', marginTop: 10 }}>
         {examples.map((ex) => (
-          <button key={ex} onClick={() => setGoal(ex)} style={{ padding: '5px 10px', borderRadius: 'var(--r-chip)', cursor: 'pointer',
-            border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-muted)', font: 'inherit', fontSize: 11.5 }}>{ex}</button>
+          <button key={ex.goal} onClick={() => setGoal(ex.goal)} style={{ padding: '5px 10px', borderRadius: 'var(--r-chip)', cursor: 'pointer',
+            border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-muted)', font: 'inherit', fontSize: 11.5 }}>{ex.title}</button>
         ))}
       </div>
       <div style={{ marginTop: 18 }}>
