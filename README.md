@@ -6,7 +6,8 @@ This is a clean Roundtable implementation that keeps the existing frontend and r
 
 - `src/server/actions/*` contains business workflows.
 - tRPC routes, REST route handlers, and the CLI all call the same actions.
-- Data is stored locally in `.roundtable/data.json`.
+- Data is stored locally in `.roundtable/data.json` by default, or in Postgres
+  when `DATABASE_URL` is configured.
 - `devrt` scenarios verify real product workflows through the CLI action surface.
 
 ## Commands
@@ -18,6 +19,35 @@ corepack pnpm typecheck
 corepack pnpm test
 corepack pnpm cli workflow smoke --message "Build a waitlist page"
 ```
+
+## Persistence
+
+The store keeps the existing `RoundtableData` document shape. For local
+prototype work it writes JSON to `.roundtable/data.json`; for shared or larger
+runs, set `DATABASE_URL` and the app will create/use a Postgres table:
+
+```bash
+DATABASE_URL=postgres://postgres:postgres@localhost:5432/roundtable pnpm dev
+```
+
+To migrate existing local data into Postgres:
+
+```bash
+DATABASE_URL=postgres://postgres:postgres@localhost:5432/roundtable pnpm migrate:postgres
+```
+
+For a local Docker-backed database, use the bundled compose service:
+
+```bash
+pnpm db:up
+pnpm db:migrate:local
+pnpm db:smoke:local
+pnpm dev:postgres
+```
+
+The initial Postgres backend stores one `jsonb` document in `roundtable_store`.
+That keeps the current action layer stable; split into relational tables later
+when search, analytics, or high-concurrency collaboration need it.
 
 ## Dispatch: DAG scheduler
 
