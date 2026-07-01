@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
+import pg from 'pg';
+import type { Pool as PgPool, PoolClient, PoolConfig } from 'pg';
 import type {
   Artifact,
   Chat,
@@ -27,6 +29,13 @@ export type RoundtableData = {
   missions: Mission[];
 };
 
+const { Pool } = pg;
+const POSTGRES_TABLE = 'roundtable_store';
+const DEFAULT_STORE_KEY = 'default';
+
+let pool: PgPool | null = null;
+let postgresReady: Promise<void> | null = null;
+
 export function nowIso(): string {
   return new Date().toISOString();
 }
@@ -40,6 +49,31 @@ export function dataPath(): string {
 }
 
 export async function readData(): Promise<RoundtableData> {
+  if (usePostgresStore()) return readPostgresData();
+  return readJsonData();
+}
+
+export async function writeData(data: RoundtableData): Promise<void> {
+  if (usePostgresStore()) {
+    await writePostgresData(data);
+    return;
+  }
+  await writeJsonData(data);
+}
+
+export async function mutateData<T>(fn: (data: RoundtableData) => T | Promise<T>): Promise<T> {
+  if (usePostgresStore()) return mutatePostgresData(fn);
+  const data = await readJsonData();
+  const result = await fn(data);
+  await writeJsonData(data);
+  return result;
+}
+
+export async function resetData(): Promise<void> {
+  await writeData(emptyData());
+}
+
+async function readJsonData(): Promise<RoundtableData> {
   try {
     const raw = await readFile(dataPath(), 'utf8');
     return normalizeData(JSON.parse(raw) as Partial<RoundtableData>);
@@ -49,7 +83,7 @@ export async function readData(): Promise<RoundtableData> {
   }
 }
 
-export async function writeData(data: RoundtableData): Promise<void> {
+async function writeJsonData(data: RoundtableData): Promise<void> {
   const target = dataPath();
   await mkdir(dirname(target), { recursive: true });
   const temp = `${target}.${process.pid}.tmp`;
@@ -57,15 +91,102 @@ export async function writeData(data: RoundtableData): Promise<void> {
   await rename(temp, target);
 }
 
-export async function mutateData<T>(fn: (data: RoundtableData) => T | Promise<T>): Promise<T> {
-  const data = await readData();
-  const result = await fn(data);
-  await writeData(data);
-  return result;
+async function readPostgresData(): Promise<RoundtableData> {
+  await ensurePostgresStore();
+  const result = await getPool().query<{ data: Partial<RoundtableData> }>(
+    `SELECT data FROM ${POSTGRES_TABLE} WHERE id = $1`,
+    [storeKey()],
+  );
+  return normalizeData(result.rows[0]?.data ?? {});
 }
 
-export async function resetData(): Promise<void> {
-  await writeData(emptyData());
+async function writePostgresData(data: RoundtableData): Promise<void> {
+  await ensurePostgresStore();
+  await getPool().query(
+    `INSERT INTO ${POSTGRES_TABLE} (id, data, updated_at)
+     VALUES ($1, $2::jsonb, now())
+     ON CONFLICT (id)
+     DO UPDATE SET data = EXCLUDED.data, updated_at = now()`,
+    [storeKey(), normalizeData(data)],
+  );
+}
+
+async function mutatePostgresData<T>(fn: (data: RoundtableData) => T | Promise<T>): Promise<T> {
+  await ensurePostgresStore();
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    await ensurePostgresRow(client);
+    const result = await client.query<{ data: Partial<RoundtableData> }>(
+      `SELECT data FROM ${POSTGRES_TABLE} WHERE id = $1 FOR UPDATE`,
+      [storeKey()],
+    );
+    const data = normalizeData(result.rows[0]?.data ?? {});
+    const output = await fn(data);
+    await client.query(
+      `UPDATE ${POSTGRES_TABLE} SET data = $2::jsonb, updated_at = now() WHERE id = $1`,
+      [storeKey(), data],
+    );
+    await client.query('COMMIT');
+    return output;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function ensurePostgresStore(): Promise<void> {
+  postgresReady ??= (async () => {
+    await getPool().query(`
+      CREATE TABLE IF NOT EXISTS ${POSTGRES_TABLE} (
+        id text PRIMARY KEY,
+        data jsonb NOT NULL,
+        updated_at timestamptz NOT NULL DEFAULT now()
+      )
+    `);
+    await getPool().query(
+      `INSERT INTO ${POSTGRES_TABLE} (id, data)
+       VALUES ($1, $2::jsonb)
+       ON CONFLICT (id) DO NOTHING`,
+      [storeKey(), emptyData()],
+    );
+  })().catch((error: unknown) => {
+    postgresReady = null;
+    throw error;
+  });
+  await postgresReady;
+}
+
+async function ensurePostgresRow(client: PoolClient): Promise<void> {
+  await client.query(
+    `INSERT INTO ${POSTGRES_TABLE} (id, data)
+     VALUES ($1, $2::jsonb)
+     ON CONFLICT (id) DO NOTHING`,
+    [storeKey(), emptyData()],
+  );
+}
+
+function getPool(): PgPool {
+  if (!pool) {
+    const max = Number(process.env.ROUNDTABLE_POSTGRES_POOL_SIZE || 10);
+    const config: PoolConfig = { max: Number.isFinite(max) && max > 0 ? max : 10 };
+    if (process.env.DATABASE_URL) config.connectionString = process.env.DATABASE_URL;
+    pool = new Pool(config);
+  }
+  return pool;
+}
+
+function usePostgresStore(): boolean {
+  const driver = process.env.ROUNDTABLE_STORE_DRIVER?.trim().toLowerCase();
+  if (driver === 'postgres') return true;
+  if (driver === 'json') return false;
+  return process.env.NODE_ENV !== 'test' && Boolean(process.env.DATABASE_URL);
+}
+
+function storeKey(): string {
+  return process.env.ROUNDTABLE_STORE_KEY?.trim() || DEFAULT_STORE_KEY;
 }
 
 function emptyData(): RoundtableData {

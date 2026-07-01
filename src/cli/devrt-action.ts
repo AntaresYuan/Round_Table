@@ -1,3 +1,4 @@
+import './load-env.js';
 import { runCliAction, CliError } from './action-runner.js';
 
 async function main(): Promise<void> {
