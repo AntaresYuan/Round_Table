@@ -115,9 +115,16 @@ describe('Mission P0 migration', () => {
     expect(testsRequestedAgain.mission?.tasks.filter((task) => task.id === `test_final_${turn.id}`)).toHaveLength(1);
 
     const repairRequested = await decideTurnFinalDelivery({ turnId: turn.id, decision: 'repair' });
-    expect(repairRequested.mission?.currentStageId).toBe('repair');
-    expect(repairRequested.mission?.tasks.some((task) => task.id === `repair_final_${turn.id}` && task.status === 'pending'))
+    expect(repairRequested.mission?.currentStageId).toBe('ship');
+    expect(repairRequested.workflowRun?.stageStates.repair?.status).toBe('done');
+    expect(repairRequested.mission?.tasks.some((task) => task.id === `repair_final_${turn.id}` && task.status === 'completed'))
       .toBe(true);
+    expect(repairRequested.records.some((record) => record.taskId === `repair_final_${turn.id}` && record.status === 'completed'))
+      .toBe(true);
+    expect(repairRequested.artifacts.some((artifact) => artifact.id === `repair_final_${turn.id}_${turn.id}`))
+      .toBe(true);
+    expect(repairRequested.mission?.finalDelivery.status).toBe('ready');
+    expect(repairRequested.mission?.finalDelivery.confidence).not.toBe('blocked');
     const repairRequestedAgain = await decideTurnFinalDelivery({ turnId: turn.id, decision: 'repair' });
     expect(repairRequestedAgain.mission?.tasks.filter((task) => task.id === `repair_final_${turn.id}`)).toHaveLength(1);
 

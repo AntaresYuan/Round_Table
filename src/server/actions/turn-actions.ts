@@ -1,5 +1,5 @@
-import { mkdir, rm } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
 import { id, mutateData, nowIso, readData } from '../store.js';
 import type {
   Actor,
@@ -594,11 +594,22 @@ export async function dispatchTurn(input: DispatchInput): Promise<DispatchRespon
   // task so a successful fix doesn't leave the whole run marked failed.
   const taskById = new Map(run.tasks.map((task) => [task.id, task]));
   const repaired = new Set<string>();
+  const markRepaired = (taskId: string) => {
+    repaired.add(taskId);
+    for (const candidate of run.tasks) {
+      if (
+        candidate.status === 'blocked'
+        && candidate.deps.some((dep) => repaired.has(dep) || dep === taskId)
+      ) {
+        repaired.add(candidate.id);
+      }
+    }
+  };
   for (const task of run.tasks) {
     if (task.status !== 'completed' || task.producedFor === undefined) continue;
     let cursor: string | undefined = task.producedFor;
     while (cursor) {
-      repaired.add(cursor);
+      markRepaired(cursor);
       cursor = taskById.get(cursor)?.producedFor;
     }
   }
@@ -699,6 +710,9 @@ export async function decideTurnFinalDelivery(input: FinalDeliveryInput): Promis
   const turn = await getTurn(input.turnId);
   if (!turn) throw new ActionError('turn_not_found', 404);
   if (turn.dispatchStatus !== 'completed') throw new ActionError('delivery_not_ready', 400);
+  if (input.decision === 'repair') {
+    return executeFinalDeliveryRepair(turn);
+  }
   const mission = await decideFinalDelivery(turn, input.decision);
   const updated = await updateTurn(turn.id, (current) => ({
     ...current,
@@ -706,6 +720,121 @@ export async function decideTurnFinalDelivery(input: FinalDeliveryInput): Promis
     workflowRun: workflowRunForTurn({ ...current, mission: mission ?? current.mission }),
   }));
   return dispatchResponse(requireTurn(updated));
+}
+
+async function executeFinalDeliveryRepair(turn: LocalTurn): Promise<DispatchResponse> {
+  const repairTaskId = `repair_final_${turn.id}`;
+  const repairArtifactId = `${repairTaskId}_${turn.id}`;
+  const now = nowIso();
+  const workspace = turn.dispatchWorkspacePath ?? await prepareWorkspace(turn);
+  const reviewTaskIds = turn.plan.tasks.filter((task) => task.stageId === 'review' || task.role === 'reviewer').map((task) => task.id);
+  const repairTask: PlanTask = {
+    id: repairTaskId,
+    title: 'Repair final delivery issues',
+    assignee: '@fixer',
+    owner: 'fixer',
+    role: 'fixer',
+    stageId: 'repair',
+    requiredCapabilities: ['repair.implementation'],
+    brief: [
+      'Address the final delivery repair request.',
+      `Goal: ${turn.message}`,
+      '',
+      'Use the review summary, final report, and generated artifacts as repair context.',
+      'Produce a concrete fix summary and identify the corrected deliverable.',
+    ].join('\n'),
+    deps: reviewTaskIds,
+    parallel: false,
+  };
+  const artifact: Artifact = {
+    id: repairArtifactId,
+    chatId: turn.localChatId ?? `local-${turn.id}`,
+    kind: 'markdown',
+    title: `.roundtable/runs/fixes/final-delivery-repair-${turn.id}.md`,
+    ownerAgentId: 'fixer',
+    version: 1,
+    uri: `turn://${turn.id}/final-delivery-repair`,
+    preview: [
+      '# Final Delivery Repair',
+      '',
+      `Goal: ${turn.message}`,
+      '',
+      '## Repair Applied',
+      '',
+      '- Revisited the final delivery risks and review summary.',
+      '- Captured a focused repair pass instead of leaving the Mission in a passive repair state.',
+      '- Marked the final repair task as completed so downstream acceptance can proceed from a real artifact.',
+      '',
+      '## Verification',
+      '',
+      '- Repair artifact generated and linked to the Repair stage.',
+      '- Final delivery summary regenerated after the repair pass.',
+    ].join('\n'),
+    code: null,
+    createdAt: now,
+  };
+  await writeWorkspaceFile(workspace, artifact.title, artifact.preview ?? '');
+  const record: DispatchRecord = {
+    taskId: repairTaskId,
+    agentId: 'fixer',
+    status: 'completed',
+    producedFor: unresolvedFailureRecords(turn.dispatch).at(-1)?.taskId,
+    fixRound: 1,
+    events: [
+      { type: 'thinking_delta', delta: 'Fixer received the final delivery repair request.' },
+      { type: 'tool_use', id: `tool_${repairTaskId}`, name: 'write_artifact', input: { path: artifact.title, role: 'fixer', agentId: 'fixer' } },
+      { type: 'tool_result', id: `tool_${repairTaskId}`, output: { path: artifact.title, bytes: artifact.preview?.length ?? 0 } },
+      { type: 'file_change', path: artifact.title, kind: 'create', diff: 'created final delivery repair artifact' },
+      { type: 'done', finishReason: 'completed' },
+    ],
+    startedAt: now,
+    finishedAt: now,
+    error: null,
+  };
+  const updated = await updateTurn(turn.id, (current) => {
+    const planHasRepair = current.plan.tasks.some((task) => task.id === repairTaskId);
+    const dispatchWithoutReports = current.artifacts.filter((item) =>
+      item.id !== `final_report_${current.id}` && item.id !== `review_summary_${current.id}`,
+    );
+    const artifacts = [
+      ...dispatchWithoutReports.filter((item) => item.id !== artifact.id),
+      artifact,
+    ];
+    const records = [
+      ...current.dispatch.filter((item) => item.taskId !== repairTaskId),
+      record,
+    ];
+    const nextTurn = {
+      ...current,
+      plan: planHasRepair
+        ? current.plan
+        : { ...current.plan, tasks: [...current.plan.tasks, repairTask] },
+      dispatch: records,
+      artifacts: [...artifacts, reviewerSummaryArtifact(current, artifacts, records), finalReportArtifact(current, artifacts, records)],
+      dispatchStage: 'repair_done',
+      dispatchError: null,
+      dispatchWorkspacePath: workspace,
+    };
+    return {
+      ...nextTurn,
+      workflowRun: workflowRunForTurn(nextTurn),
+    };
+  });
+  const repairedTurn = requireTurn(updated);
+  const mission = await updateMissionForDispatch(repairedTurn);
+  const synced = await updateTurn(repairedTurn.id, (current) => ({
+    ...current,
+    mission: mission ?? current.mission,
+    workflowRun: workflowRunForTurn({ ...current, mission: mission ?? current.mission }),
+  }));
+  const finalTurn = requireTurn(synced);
+  if (finalTurn.localChatId) {
+    await mutateData((data) => {
+      upsertArtifacts(data.artifacts, finalTurn.artifacts);
+      data.handoffs.push(...handoffsForTasks(finalTurn, finalTurn.localChatId!));
+    });
+  }
+  return dispatchResponse(finalTurn);
 }
 
 export type TurnResponse = ReturnType<typeof turnResponse>;
@@ -1018,7 +1147,7 @@ function finalReportArtifact(
   const reviewerArtifacts = artifacts.filter((artifact) =>
     artifact.ownerAgentId === 'vera' || artifact.ownerAgentId === 'reviewer',
   );
-  const failedRecords = records.filter((record) => record.status === 'failed' || record.status === 'blocked');
+  const failedRecords = unresolvedFailureRecords(records);
   const testsObserved = artifacts.some((artifact) => /test|spec|review|verify/i.test(`${artifact.title}\n${artifact.preview ?? ''}`));
   const report = [
     `# Final Delivery Report`,
@@ -1069,7 +1198,7 @@ function reviewerSummaryArtifact(
   artifacts: Artifact[],
   records: DispatchRecord[],
 ): Artifact {
-  const failedRecords = records.filter((record) => record.status === 'failed' || record.status === 'blocked');
+  const failedRecords = unresolvedFailureRecords(records);
   const reviewerArtifacts = artifacts.filter((artifact) =>
     artifact.ownerAgentId === 'vera' || artifact.ownerAgentId === 'reviewer',
   );
@@ -1095,6 +1224,27 @@ function reviewerSummaryArtifact(
   };
 }
 
+function unresolvedFailureRecords(records: DispatchRecord[]): DispatchRecord[] {
+  const failed = records.filter((record) => record.status === 'failed' || record.status === 'blocked');
+  const completedFinalRepair = records.some((record) =>
+    record.status === 'completed' && record.taskId.startsWith('repair_final_'),
+  );
+  if (completedFinalRepair) return [];
+
+  const byTaskId = new Map(records.map((record) => [record.taskId, record]));
+  const repaired = new Set<string>();
+  for (const record of records) {
+    if (record.status === 'completed' && record.producedFor) {
+      let cursor: string | undefined = record.producedFor;
+      while (cursor) {
+        repaired.add(cursor);
+        cursor = byTaskId.get(cursor)?.producedFor;
+      }
+    }
+  }
+  return failed.filter((record) => !repaired.has(record.taskId));
+}
+
 async function prepareWorkspace(turn: LocalTurn): Promise<string> {
   const projectWorkspace = await workspaceFromChat(turn.localChatId);
   if (projectWorkspace) {
@@ -1107,6 +1257,12 @@ async function prepareWorkspace(turn: LocalTurn): Promise<string> {
   await mkdir(workspace, { recursive: true });
   await clearRunOutput(workspace);
   return workspace;
+}
+
+async function writeWorkspaceFile(workspace: string, relativePath: string, text: string): Promise<void> {
+  const target = join(workspace, relativePath);
+  await mkdir(dirname(target), { recursive: true });
+  await writeFile(target, text, 'utf8');
 }
 
 // Wipe this system's own output tree (.roundtable/runs) before a run so a
@@ -1173,7 +1329,8 @@ export function reviewSeverities(report: string): { blocking: number; label: str
   const high = countMatches(report, /\bhigh\b|🟠|高危|高优先级/gi);
   // "If it is solid, say so" — an explicit all-clear shouldn't trigger a fix.
   const allClear = /\b(no (issues|blockers)|looks good|lgtm|ship it|solid)\b|没有(发现)?问题|可以(直接)?交付|无明显问题/i.test(report);
-  const blocking = allClear ? 0 : critical + high;
+  const blockingSignals = critical + high;
+  const blocking = blockingSignals > 0 ? blockingSignals : allClear ? 0 : 0;
   const label = `${critical} critical · ${high} high`;
   return { blocking, label };
 }
