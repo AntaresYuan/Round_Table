@@ -81,7 +81,7 @@ const workbenchPinnedRouter = createTRPCRouter({
 });
 
 const missionsRouter = createTRPCRouter({
-  templates: protectedProcedure.query(() => listWorkflowTemplates()),
+  templates: publicProcedure.query(() => listWorkflowTemplates()),
   list: protectedProcedure
     .input(z.object({ chatId: z.string().min(1).optional() }).optional())
     .query(({ input }) => listMissions(input?.chatId)),

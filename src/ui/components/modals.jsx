@@ -138,7 +138,11 @@ function NewTaskModal({ workbench, members, agents, onClose, onCreate }) {
     retry: false,
     staleTime: 60_000,
   });
-  const missionTemplates = [
+  const templatesQ = trpc.missions.templates.useQuery(undefined, {
+    retry: false,
+    staleTime: 60_000,
+  });
+  const fallbackMissionTemplates = [
     {
       id: 'wf-feature-builder',
       name: 'Feature Builder',
@@ -176,6 +180,16 @@ function NewTaskModal({ workbench, members, agents, onClose, onCreate }) {
       ],
     },
   ];
+  const missionTemplates = (templatesQ.data || fallbackMissionTemplates).map((template) => ({
+    id: template.id,
+    name: template.name,
+    tag: template.tag,
+    desc: template.desc,
+    pipe: (template.pipe || template.stages?.filter((stage) => stage.kind !== 'intake').map((stage) => ({
+      icon: stage.icon,
+      label: stage.kind === 'ship' && stage.name === 'Final Report' ? 'Report' : stage.name,
+    })) || []),
+  }));
   const selectedTemplate = missionTemplates.find((template) => template.id === workflowTemplateId) || missionTemplates[0];
   // Personalized suggestions when signed in (+ LLM key); static fallback otherwise.
   const examples = suggestQ.data ?? ['A pricing page with monthly/annual toggle', 'A REST endpoint for CSV export', 'Dark mode across the app'];
