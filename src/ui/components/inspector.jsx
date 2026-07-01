@@ -2,8 +2,8 @@
 /* ============================================================================
    Roundtable — inspector.jsx
    The right-hand inspector panel and its tabs: artifact Drawer, the live message
-   Thread, the Files list, the Deps graph host, Memory, and the structured
-   meeting Notes. Extracted from app-root.jsx so the side panel is one module.
+   Thread, the Files list, and the structured meeting Notes. Extracted from
+   app-root.jsx so the side panel is one module.
    ============================================================================ */
 
 import React from 'react';
@@ -11,46 +11,12 @@ import { Avatar, RoleTag, Icon, Spinner, tint, alpha } from './primitives';
 import { ArtifactRenderer, CodeBlock, VChip, HandoffCard, iconBtn, normalizeArtifactForDisplay } from './cards';
 import { LocalLiveThread } from './live-turn';
 import { Thread } from './stage-scene';
-import { DependencyGraphSidebar } from './dep-graph';
-import { MemoryPanel } from './memory-panel';
 import { sceneAt, meetingNotes } from './roundtable';
 import { liveArtifactsFromTurns } from '../lib/live-scene';
 import { RT } from '../lib/rt';
 import { trpc } from '../lib/trpc';
 
 const { useState, useEffect } = React;
-
-function missionDependencyGraph(turns, artifacts, missions) {
-  const turn = turns?.[0];
-  const mission = turn?.result?.mission || missions?.[0];
-  if (!mission) return null;
-  const byId = new Map((artifacts || []).map((artifact) => [artifact.id, artifact]));
-  const nodes = (mission.tasks || [])
-    .flatMap((task) => task.artifactIds || [])
-    .filter((id, index, all) => all.indexOf(id) === index)
-    .map((artifactId) => {
-      const artifact = byId.get(artifactId);
-      return {
-        artifactId,
-        title: artifact?.title || artifactId,
-        ownerAgentId: artifact?.ownerAgentId || 'orchestrator',
-        version: artifact?.version || 1,
-      };
-    });
-  const taskById = new Map((mission.tasks || []).map((task) => [task.id, task]));
-  const edges = [];
-  for (const task of mission.tasks || []) {
-    for (const depId of task.deps || []) {
-      const dep = taskById.get(depId);
-      for (const from of dep?.artifactIds || []) {
-        for (const to of task.artifactIds || []) {
-          edges.push({ from, to, kind: 'references' });
-        }
-      }
-    }
-  }
-  return { nodes, edges, staleNodeIds: [] };
-}
 
 function Drawer({ art, agents, onClose }) {
   if (!art) return null;
@@ -220,7 +186,7 @@ function FileRow({ art, agents, onOpen, activeChatId }) {
     </button>
   );
 }
-function InspectorPanel({ tab, setTab, clock, agents, scene, width, onOpenArtifact, onAction, onClose, live, liveArtifacts, liveMessages, liveHandoffs, liveMissions, activeChatId, memory, localTurns, localStatus, onApproveLocalTurn, localTurnActions, onRewrite }) {
+function InspectorPanel({ tab, setTab, clock, agents, scene, width, onOpenArtifact, onAction, onClose, live, liveArtifacts, liveMessages, liveHandoffs, activeChatId, localTurns, localStatus, onApproveLocalTurn, localTurnActions, onRewrite }) {
   const placed = sceneAt(clock).placed;
   const hasLocalTurns = localTurns && localTurns.length > 0;
   const localArtifacts = hasLocalTurns ? liveArtifactsFromTurns(localTurns, agents, localStatus) : [];
@@ -231,7 +197,6 @@ function InspectorPanel({ tab, setTab, clock, agents, scene, width, onOpenArtifa
     : live
     ? (liveArtifacts ?? []).map((a) => ({ ...a, version: a.currentVersion, source: a.source ?? 'generated' }))
     : placed.map((p) => p.art);
-  const liveGraph = hasLocalTurns || live ? missionDependencyGraph(localTurns, created, liveMissions) : null;
   // The fixture "brief" is demo-only — in live mode there are no user-provided artifacts yet.
   const provided = live || hasLocalTurns ? [] : [RT.ARTIFACTS.brief];
   const notes = meetingNotes(clock);
@@ -246,8 +211,6 @@ function InspectorPanel({ tab, setTab, clock, agents, scene, width, onOpenArtifa
       <div style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '6px 8px 0' }}>
         {tabBtn('chat', 'Chat')}
         {tabBtn('files', `Files · ${created.length + provided.length}`)}
-        {tabBtn('memory', 'Memory')}
-        {tabBtn('deps', 'Deps')}
         {tabBtn('notes', 'Notes')}
         <button onClick={onClose} style={{ ...iconBtn, border: 'none', background: 'transparent' }}><Icon name="x" size={15} /></button>
       </div>
@@ -277,32 +240,6 @@ function InspectorPanel({ tab, setTab, clock, agents, scene, width, onOpenArtifa
           {created.length === 0
             ? <div style={{ fontSize: 12.5, color: 'var(--text-faint)', fontStyle: 'italic', padding: '4px 2px' }}>Nothing yet — artifacts land here as the team works.</div>
             : created.map((a) => <FileRow key={a.id} art={a} agents={agents} onOpen={onOpenArtifact} activeChatId={activeChatId} />)}
-        </div>
-      ) : tab === 'memory' ? (
-        <MemoryPanel memory={memory} />
-      ) : tab === 'deps' ? (
-        <div style={{ flex: 1, overflowY: 'auto', padding: '14px 14px 24px' }}>
-          {hasLocalTurns || live ? (
-            <DependencyGraphSidebar
-              graph={liveGraph}
-              agents={agents}
-              chatId={localTurns?.[0]?.id || activeChatId || 'local'}
-              onNodeClick={(node) => {
-                const art = created.find((artifact) => artifact.id === node.artifactId);
-                if (art && onOpenArtifact) onOpenArtifact(art);
-              }}
-            />
-          ) : (
-            <DependencyGraphSidebar
-              graph={RT.DEPENDENCY_GRAPH}
-              agents={agents}
-              chatId={RT.WORKBENCH?.id || 'main'}
-              onNodeClick={(node) => {
-                const art = Object.values(RT.ARTIFACTS).find((a) => a.id === node.artifactId);
-                if (art && onOpenArtifact) onOpenArtifact(art);
-              }}
-            />
-          )}
         </div>
       ) : live || hasLocalTurns ? (
         <LiveNotes agents={agents} artifacts={created} handoffs={liveHandoffs} />

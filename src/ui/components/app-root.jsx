@@ -483,15 +483,6 @@ function App() {
       trpcUtils.chats.list.invalidate();
     },
   });
-  const updateProfile = trpc.userProfile.update.useMutation({
-    onSuccess: () => trpcUtils.userProfile.get.invalidate(),
-  });
-  const pinWorkbench = trpc.workbenchPinned.pin.useMutation({
-    onSuccess: () => trpcUtils.workbenchPinned.list.invalidate(),
-  });
-  const unpinWorkbench = trpc.workbenchPinned.unpin.useMutation({
-    onSuccess: () => trpcUtils.workbenchPinned.list.invalidate(),
-  });
   const liveWorkbenches = workbenchesQ.data ?? [];
   const activeChat =
     authed && chatsQ.data && selectedChatId
@@ -519,21 +510,11 @@ function App() {
       : localTasks.length > 0
         ? localTasks
         : RT.TASKS;
-  const profileQ = trpc.userProfile.get.useQuery(undefined, { enabled: authed });
-  const pinsQ = trpc.workbenchPinned.list.useQuery(
-    { workbenchId: activeWorkbenchId ?? '' },
-    { enabled: authed && !!activeWorkbenchId },
-  );
   const artifactsQ = trpc.artifacts.listByChat.useQuery(
     { chatId: activeChatId ?? '' },
     { enabled: authed && !!activeChatId },
   );
   const liveArtifacts = authed && artifactsQ.data ? artifactsQ.data : null;
-  const missionsQ = trpc.missions.list.useQuery(
-    { chatId: activeChatId ?? '' },
-    { enabled: authed && !!activeChatId },
-  );
-  const liveMissions = authed && missionsQ.data ? missionsQ.data : null;
   const messagesQ = trpc.messages.list.useQuery(
     { chatId: activeChatId ?? '' },
     { enabled: authed && !!activeChatId },
@@ -951,25 +932,6 @@ function App() {
     }
     sendLocalTurn(message, undefined, undefined, workflowTemplateId);
   };
-  const memory = {
-    live: authed,
-    workbench: activeWorkbench,
-    profile: profileQ.data,
-    pins: pinsQ.data ?? [],
-    profileSaving: updateProfile.isPending,
-    pinSaving: pinWorkbench.isPending || unpinWorkbench.isPending,
-    profileError: updateProfile.error?.message,
-    pinError: pinWorkbench.error?.message || unpinWorkbench.error?.message,
-    onSaveProfile: (patch) => updateProfile.mutate(patch),
-    onAddPin: (content) => {
-      if (!activeWorkbenchId) return;
-      pinWorkbench.mutate({ workbenchId: activeWorkbenchId, content });
-    },
-    onRemovePin: (id) => {
-      if (!activeWorkbenchId) return;
-      unpinWorkbench.mutate({ workbenchId: activeWorkbenchId, id });
-    },
-  };
   const breakoutData = RT.SCRIPT.find((b) => b.kind === 'breakout');
 
   return (
@@ -1068,7 +1030,7 @@ function App() {
                 {notesOpen && !compact && <ResizeHandle onResize={(dx) => setInspectorW((w) => Math.max(300, Math.min(640, w + dx)))} />}
                 {notesOpen && <InspectorPanel tab={inspectorTab} setTab={setInspectorTab} clock={scene.clock} width={compact ? 'min(100vw, 420px)' : inspectorW}
                   agents={agents} scene={scene} live={authed && !!activeChatId} liveArtifacts={liveArtifacts} liveMessages={liveMessages}
-                  liveHandoffs={liveHandoffs} liveMissions={liveMissions} activeChatId={activeChatId} memory={memory}
+                  liveHandoffs={liveHandoffs} activeChatId={activeChatId}
                   localTurns={activeLocalTurns.length ? activeLocalTurns : localTurns} localStatus={localStatus} onApproveLocalTurn={approveLocalTurn}
                   localTurnActions={{ interrupt: interruptLocalTurn, redispatch: redispatchLocalTurn, discard: discardLocalTurn, clarify: answerLocalClarification, approve: approveLocalTurn, delivery: decideLocalDelivery }}
                   onOpenArtifact={setDrawerArt} onAction={onAction} onClose={() => setNotesOpen(false)}
