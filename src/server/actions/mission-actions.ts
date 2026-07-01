@@ -419,43 +419,69 @@ export async function decideFinalDelivery(
   decision: 'accept' | 'repair' | 'tests',
 ): Promise<Mission | null> {
   const wantsTests = decision === 'tests';
-  return updateMission(turn.missionId, (mission) => ({
-    ...mission,
-    finalDelivery: {
-      ...mission.finalDelivery,
-      status: decision === 'accept' ? 'accepted' : decision === 'repair' ? 'rejected' : 'ready',
-      recommendation: decision === 'accept' ? 'accept' : decision === 'repair' ? 'repair' : 'review',
-    },
-    checkpoints: mission.checkpoints.map((checkpoint) =>
-      checkpoint.kind === 'final_delivery_acceptance'
-        ? {
-            ...checkpoint,
-            status: decision === 'accept' ? 'satisfied' : decision === 'repair' ? 'blocked' : 'pending',
-            requiredAction: decision === 'accept'
-              ? null
-              : wantsTests
-                ? 'Reviewer test evidence requested before final acceptance.'
-                : 'Request repair from the delivery state.',
-            resolvedAt: wantsTests ? null : nowIso(),
-          }
-        : checkpoint,
-    ),
-    decisions: [
-      ...mission.decisions,
-      {
-        id: `decision_final_${turn.id}_${decision}`,
-        stageId: 'ship',
-        actor: 'user',
-        summary: decision === 'accept'
-          ? 'Final delivery accepted.'
-          : wantsTests
-            ? 'Additional test evidence requested before final acceptance.'
-            : 'Final delivery rejected; repair requested.',
-        createdAt: nowIso(),
+  return updateMission(turn.missionId, (mission) => {
+    const repairTaskId = `repair_final_${turn.id}`;
+    const needsRepairTask = decision === 'repair' && !mission.tasks.some((task) => task.id === repairTaskId);
+    const tasks = needsRepairTask
+      ? [
+          ...mission.tasks,
+          {
+            id: repairTaskId,
+            stageId: 'repair',
+            title: 'Repair final delivery issues',
+            assignee: '@fixer',
+            owner: 'fixer',
+            status: 'pending' as const,
+            deps: mission.tasks.filter((task) => task.stageId === 'review').map((task) => task.id),
+            artifactIds: [],
+          },
+        ]
+      : mission.tasks;
+    return {
+      ...mission,
+      currentStageId: decision === 'repair' ? 'repair' : mission.currentStageId,
+      tasks,
+      stages: mission.stages.map((stage) =>
+        stage.id === 'repair' && needsRepairTask
+          ? { ...stage, status: 'active', taskIds: [...stage.taskIds, repairTaskId] }
+          : stage,
+      ),
+      finalDelivery: {
+        ...mission.finalDelivery,
+        status: decision === 'accept' ? 'accepted' : decision === 'repair' ? 'rejected' : 'ready',
+        recommendation: decision === 'accept' ? 'accept' : decision === 'repair' ? 'repair' : 'review',
       },
-    ],
-    updatedAt: nowIso(),
-  }));
+      checkpoints: mission.checkpoints.map((checkpoint) =>
+        checkpoint.kind === 'final_delivery_acceptance'
+          ? {
+              ...checkpoint,
+              status: decision === 'accept' ? 'satisfied' : decision === 'repair' ? 'blocked' : 'pending',
+              requiredAction: decision === 'accept'
+                ? null
+                : wantsTests
+                  ? 'Reviewer test evidence requested before final acceptance.'
+                  : 'Repair follow-up task created from final delivery state.',
+              resolvedAt: wantsTests ? null : nowIso(),
+            }
+          : checkpoint,
+      ),
+      decisions: [
+        ...mission.decisions,
+        {
+          id: `decision_final_${turn.id}_${decision}`,
+          stageId: 'ship',
+          actor: 'user',
+          summary: decision === 'accept'
+            ? 'Final delivery accepted.'
+            : wantsTests
+              ? 'Additional test evidence requested before final acceptance.'
+              : 'Final delivery rejected; repair follow-up task created.',
+          createdAt: nowIso(),
+        },
+      ],
+      updatedAt: nowIso(),
+    };
+  });
 }
 
 export function workflowRunForTurn(turn: LocalTurn): WorkflowRun {

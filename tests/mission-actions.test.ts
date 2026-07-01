@@ -93,6 +93,11 @@ describe('Mission P0 migration', () => {
     expect(testsRequested.mission?.checkpoints.find((checkpoint) => checkpoint.kind === 'final_delivery_acceptance')?.status)
       .toBe('pending');
 
+    const repairRequested = await decideTurnFinalDelivery({ turnId: turn.id, decision: 'repair' });
+    expect(repairRequested.mission?.currentStageId).toBe('repair');
+    expect(repairRequested.mission?.tasks.some((task) => task.id === `repair_final_${turn.id}` && task.status === 'pending'))
+      .toBe(true);
+
     const accepted = await decideTurnFinalDelivery({ turnId: turn.id, decision: 'accept' });
     expect(accepted.mission?.finalDelivery.status).toBe('accepted');
     expect(accepted.mission?.checkpoints.find((checkpoint) => checkpoint.kind === 'final_delivery_acceptance')?.status)
