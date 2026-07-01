@@ -50,6 +50,7 @@ export async function deleteChat(actor: Actor, chatId: string): Promise<{ id: st
     data.artifacts = data.artifacts.filter((artifact) => artifact.chatId !== chatId);
     data.handoffs = data.handoffs.filter((handoff) => handoff.chatId !== chatId);
     data.turns = data.turns.filter((turn) => turn.localChatId !== chatId);
+    data.missions = data.missions.filter((mission) => !(mission.ownerId === actor.id && mission.chatId === chatId));
     return { id: chatId };
   });
 }

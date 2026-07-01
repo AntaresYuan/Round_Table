@@ -2,7 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { listMissions, listWorkflowTemplates } from '../src/server/actions/mission-actions.js';
+import { getMission, getMissionByTurn, listMissions, listWorkflowTemplates } from '../src/server/actions/mission-actions.js';
 import { approveTurn, createTurn, decideTurnFinalDelivery } from '../src/server/actions/turn-actions.js';
 import { resetData } from '../src/server/store.js';
 import type { Actor } from '../src/server/types.js';
@@ -13,6 +13,12 @@ const actor: Actor = {
   id: 'test-user',
   email: 'test@roundtable.local',
   name: 'Test User',
+};
+
+const otherActor: Actor = {
+  id: 'other-user',
+  email: 'other@roundtable.local',
+  name: 'Other User',
 };
 
 beforeEach(async () => {
@@ -63,9 +69,14 @@ describe('Mission P0 migration', () => {
     expect(turn.plan.tasks[0]?.stageId).toBe('plan');
     expect(turn.plan.tasks.some((task) => task.stageId === 'build')).toBe(true);
 
-    const missionsBefore = await listMissions('mission-chat');
+    const missionsBefore = await listMissions(actor, 'mission-chat');
     expect(missionsBefore).toHaveLength(1);
     expect(missionsBefore[0]?.id).toBe(turn.missionId);
+    expect(await getMission(actor, turn.missionId)).toMatchObject({ id: turn.missionId });
+    expect(await getMissionByTurn(actor, turn.id)).toMatchObject({ id: turn.missionId });
+    expect(await listMissions(otherActor, 'mission-chat')).toHaveLength(0);
+    expect(await getMission(otherActor, turn.missionId)).toBeNull();
+    expect(await getMissionByTurn(otherActor, turn.id)).toBeNull();
 
     const result = await approveTurn({
       turnId: turn.id,

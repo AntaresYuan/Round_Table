@@ -27,13 +27,13 @@ prototype work it writes JSON to `.roundtable/data.json`; for shared or larger
 runs, set `DATABASE_URL` and the app will create/use a Postgres table:
 
 ```bash
-DATABASE_URL=postgres://postgres:postgres@localhost:5432/roundtable pnpm dev
+DATABASE_URL=postgres://roundtable:roundtable@localhost:5432/roundtable pnpm dev
 ```
 
 To migrate existing local data into Postgres:
 
 ```bash
-DATABASE_URL=postgres://postgres:postgres@localhost:5432/roundtable pnpm migrate:postgres
+DATABASE_URL=postgres://roundtable:roundtable@localhost:5432/roundtable pnpm migrate:postgres
 ```
 
 For a local Docker-backed database, use the bundled compose service:

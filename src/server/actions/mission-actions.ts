@@ -1,4 +1,4 @@
-import { id, mutateData, nowIso } from '../store.js';
+import { id, mutateData, nowIso, readData } from '../store.js';
 import type {
   Actor,
   Artifact,
@@ -374,20 +374,21 @@ export function buildMissionSnapshot(input: CreateMissionInput): Mission {
   };
 }
 
-export async function getMission(missionId: string): Promise<Mission | null> {
-  return mutateData((data) => data.missions.find((mission) => mission.id === missionId) ?? null);
+export async function getMission(actor: Actor, missionId: string): Promise<Mission | null> {
+  const data = await readData();
+  return data.missions.find((mission) => mission.ownerId === actor.id && mission.id === missionId) ?? null;
 }
 
-export async function getMissionByTurn(turnId: string): Promise<Mission | null> {
-  return mutateData((data) => data.missions.find((mission) => mission.sourceTurnId === turnId) ?? null);
+export async function getMissionByTurn(actor: Actor, turnId: string): Promise<Mission | null> {
+  const data = await readData();
+  return data.missions.find((mission) => mission.ownerId === actor.id && mission.sourceTurnId === turnId) ?? null;
 }
 
-export async function listMissions(chatId?: string | undefined): Promise<Mission[]> {
-  return mutateData((data) =>
-    data.missions
-      .filter((mission) => !chatId || mission.chatId === chatId)
-      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
-  );
+export async function listMissions(actor: Actor, chatId?: string | undefined): Promise<Mission[]> {
+  const data = await readData();
+  return data.missions
+    .filter((mission) => mission.ownerId === actor.id && (!chatId || mission.chatId === chatId))
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
 export async function updateMissionForPlannedTurn(turn: LocalTurn): Promise<Mission | null> {

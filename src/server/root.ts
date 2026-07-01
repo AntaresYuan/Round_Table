@@ -84,10 +84,10 @@ const missionsRouter = createTRPCRouter({
   templates: publicProcedure.query(() => listWorkflowTemplates()),
   list: protectedProcedure
     .input(z.object({ chatId: z.string().min(1).optional() }).optional())
-    .query(({ input }) => listMissions(input?.chatId)),
+    .query(({ ctx, input }) => listMissions(ctx.user, input?.chatId)),
   get: protectedProcedure
     .input(idInput)
-    .query(({ input }) => getMission(input.id)),
+    .query(({ ctx, input }) => getMission(ctx.user, input.id)),
 });
 
 const aiRouter = createTRPCRouter({
