@@ -309,12 +309,6 @@ function InspectorPanel({ tab, setTab, clock, agents, scene, width, onOpenArtifa
       ) : (
         <NotesContent clock={clock} agents={agents} notes={notes} />
       )}
-
-      <div style={{ padding: '10px 14px', borderTop: '1px solid var(--border)', fontSize: 11, color: 'var(--text-faint)',
-        display: 'flex', alignItems: 'center', gap: 6 }}>
-        <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--run)', animation: 'rt-blink 1.4s infinite' }} />
-        live · kept by the facilitator
-      </div>
     </div>
   );
 }
