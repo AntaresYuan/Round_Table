@@ -16,6 +16,17 @@ import type {
   WorkflowRun,
 } from '../types.js';
 import { applyAnswers, assessClarity } from './clarify-actions.js';
+import {
+  buildHandoffCardV2,
+  buildMissionSnapshot,
+  createMission,
+  selectWorkflowTemplate,
+  setMissionRejected,
+  updateMissionForDispatch,
+  updateMissionForPlannedTurn,
+  workflowRunForTurn,
+  workflowTemplateById,
+} from './mission-actions.js';
 import { runAgentTask, normalizeAdapter } from './agent-runner.js';
 import { E2BUnavailableError } from './adapters/e2b-adapter.js';
 import { MiniMaxUnavailableError } from './adapters/minimax-adapter.js';
@@ -32,6 +43,7 @@ export type CreateTurnInput = {
   message: string;
   turnId?: string | undefined;
   chatId?: string | undefined;
+  workflowTemplateId?: string | undefined;
   actor?: Actor | null | undefined;
 };
 
@@ -72,11 +84,27 @@ export async function createTurn(input: CreateTurnInput): Promise<TurnResponse> 
       needsClarification: true,
       clarifyQuestions: assessment.questions,
       clarifyAnswers: [],
+      workflowTemplateId: input.workflowTemplateId,
     });
+    const mission = await createMission({
+      actor: input.actor,
+      chatId,
+      turnId: turn.id,
+      missionId: turn.missionId,
+      goal: message,
+      plan: turn.plan,
+      needsClarification: true,
+      workflowTemplateId: turn.workflowTemplateId,
+    });
+    const turnWithMission = {
+      ...turn,
+      mission,
+      workflowRun: workflowRunForTurn({ ...turn, mission }),
+    };
     await mutateData((data) => {
-      data.turns = [turn, ...data.turns.filter((item) => item.id !== turnId)];
+      data.turns = [turnWithMission, ...data.turns.filter((item) => item.id !== turnId)];
     });
-    return turnResponse(turn);
+    return turnResponse(turnWithMission);
   }
 
   const turn = buildTurn({
@@ -85,15 +113,31 @@ export async function createTurn(input: CreateTurnInput): Promise<TurnResponse> 
     ownerId: input.actor?.id ?? null,
     message,
     now,
+    workflowTemplateId: input.workflowTemplateId,
   });
+  const mission = await createMission({
+    actor: input.actor,
+    chatId,
+    turnId: turn.id,
+    missionId: turn.missionId,
+    goal: message,
+    plan: turn.plan,
+    needsClarification: false,
+    workflowTemplateId: turn.workflowTemplateId,
+  });
+  const turnWithMission = {
+    ...turn,
+    mission,
+    workflowRun: workflowRunForTurn({ ...turn, mission }),
+  };
   await mutateData((data) => {
-    data.turns = [turn, ...data.turns.filter((item) => item.id !== turnId)];
+    data.turns = [turnWithMission, ...data.turns.filter((item) => item.id !== turnId)];
     if (chatId) {
-      upsertArtifacts(data.artifacts, turn.artifacts);
-      data.handoffs.push(handoffForTurn(input.actor, chatId, turn));
+      upsertArtifacts(data.artifacts, turnWithMission.artifacts);
+      data.handoffs.push(handoffForTurn(input.actor, chatId, turnWithMission));
     }
   });
-  return turnResponse(turn);
+  return turnResponse(turnWithMission);
 }
 
 // Builds a LocalTurn. When `needsClarification` is set the turn is parked before
@@ -107,16 +151,67 @@ function buildTurn(opts: {
   needsClarification?: boolean;
   clarifyQuestions?: ClarifyQuestion[];
   clarifyAnswers?: ClarifyAnswer[];
+  missionId?: string | undefined;
+  workflowTemplateId?: string | undefined;
 }): LocalTurn {
   const { turnId, chatId, ownerId, message, now } = opts;
   const parked = opts.needsClarification === true;
+  const workflowTemplate = opts.workflowTemplateId
+    ? workflowTemplateById(opts.workflowTemplateId)
+    : selectWorkflowTemplate(message);
+  const missionId = opts.missionId ?? id('mission');
   const intake = intakeFromMessage(message);
   const plan = parked ? { summary: `Awaiting clarification: ${message.slice(0, 80)}`, tasks: [] } : planFromMessage(message);
   const artifacts = parked ? [] : baseArtifacts(turnId, chatId ?? `local-${turnId}`, message, intake, plan);
+  const mission = buildMissionSnapshot({
+    ownerId,
+    chatId,
+    turnId,
+    missionId,
+    goal: message,
+    plan,
+    needsClarification: parked,
+    workflowTemplateId: workflowTemplate.id,
+  });
+  const workflowRun = workflowRunForTurn({
+    id: turnId,
+    localChatId: chatId,
+    ownerId,
+    missionId,
+    workflowTemplateId: workflowTemplate.id,
+    message,
+    status: 'done',
+    createdAt: now,
+    provider: 'roundtable-local',
+    model: 'agent-chain-v1',
+    pmMessage: '',
+    needsClarification: parked,
+    clarifyQuestions: opts.clarifyQuestions ?? [],
+    clarifyAnswers: opts.clarifyAnswers ?? [],
+    needsApproval: !parked,
+    approvalStatus: parked ? 'approved' : 'pending',
+    approvedAt: parked ? now : null,
+    dispatchStatus: 'not_started',
+    dispatchAdapter: null,
+    dispatchedAt: null,
+    dispatchStage: parked ? 'clarifying' : 'awaiting_approval',
+    dispatchError: null,
+    dispatchWorkspacePath: null,
+    dispatch: [],
+    artifacts,
+    intake,
+    plan,
+    workflow: workflowTemplate,
+    workflowRun: null,
+    mission,
+    error: null,
+  });
   return {
     id: turnId,
     localChatId: chatId,
     ownerId,
+    missionId,
+    workflowTemplateId: workflowTemplate.id,
     message,
     status: 'done',
     createdAt: now,
@@ -143,8 +238,9 @@ function buildTurn(opts: {
     artifacts,
     intake,
     plan,
-    workflow: null,
-    workflowRun: null,
+    workflow: workflowTemplate,
+    workflowRun,
+    mission,
     error: null,
   };
 }
@@ -171,18 +267,34 @@ export async function answerClarification(input: {
     message: enrichedMessage,
     now,
     clarifyAnswers: input.answers,
+    missionId: existing.missionId,
+    workflowTemplateId: existing.workflowTemplateId,
   });
   // Preserve the original user-facing message; keep the enriched text in the plan.
-  const turn: LocalTurn = { ...planned, message: existing.message, createdAt: existing.createdAt };
+  const syncedMission = await updateMissionForPlannedTurn({
+    ...planned,
+    message: existing.message,
+    createdAt: existing.createdAt,
+  });
+  const turn: LocalTurn = {
+    ...planned,
+    message: existing.message,
+    createdAt: existing.createdAt,
+    mission: syncedMission ?? planned.mission,
+  };
+  const turnWithWorkflowRun: LocalTurn = {
+    ...turn,
+    workflowRun: workflowRunForTurn(turn),
+  };
 
   await mutateData((data) => {
-    data.turns = [turn, ...data.turns.filter((item) => item.id !== turn.id)];
-    if (turn.localChatId) {
-      upsertArtifacts(data.artifacts, turn.artifacts);
-      data.handoffs.push(handoffForTurn(input.actor, turn.localChatId, turn));
+    data.turns = [turnWithWorkflowRun, ...data.turns.filter((item) => item.id !== turn.id)];
+    if (turnWithWorkflowRun.localChatId) {
+      upsertArtifacts(data.artifacts, turnWithWorkflowRun.artifacts);
+      data.handoffs.push(handoffForTurn(input.actor, turnWithWorkflowRun.localChatId, turnWithWorkflowRun));
     }
   });
-  return turnResponse(turn);
+  return turnResponse(turnWithWorkflowRun);
 }
 
 export async function listTurns(chatId?: string | undefined): Promise<LocalTurn[]> {
@@ -209,7 +321,14 @@ export async function approveTurn(input: ApprovalInput): Promise<DispatchRespons
       dispatchStage: 'rejected',
       dispatchError: 'rejected_by_user',
     }));
-    return dispatchResponse(requireTurn(rejected));
+    const rejectedTurn = requireTurn(rejected);
+    const mission = await setMissionRejected(rejectedTurn);
+    const withMission = await updateTurn(rejectedTurn.id, (current) => ({
+      ...current,
+      mission: mission ?? current.mission,
+      workflowRun: workflowRunForTurn({ ...current, mission: mission ?? current.mission }),
+    }));
+    return dispatchResponse(requireTurn(withMission));
   }
 
   const approved = await updateTurn(input.turnId, (current) => ({
@@ -219,16 +338,36 @@ export async function approveTurn(input: ApprovalInput): Promise<DispatchRespons
     approvedAt: nowIso(),
     dispatchStage: 'approved',
   }));
-  const next = requireTurn(approved);
+  const approvedTurn = requireTurn(approved);
+  const mission = await updateMissionForPlannedTurn(approvedTurn);
+  const synced = await updateTurn(approvedTurn.id, (current) => ({
+    ...current,
+    mission: mission ?? current.mission,
+    workflowRun: workflowRunForTurn({ ...current, mission: mission ?? current.mission }),
+  }));
+  const next = requireTurn(synced);
   if (input.autoDispatch) {
     if (input.background) {
       // Mark running now, run the DAG in the background, and return immediately.
       // The client polls /history; per-task stageStates stream in as agents work.
-      const running = await updateTurn(next.id, (current) => ({
+      const running = await updateTurn(next.id, (current) => {
+        const runTurn = {
+          ...current,
+          dispatchStatus: 'running' as const,
+          dispatchStage: 'dispatch',
+          dispatchError: null,
+        };
+        return {
+          ...runTurn,
+          workflowRun: workflowRunForTurn(runTurn),
+        };
+      });
+      const runningTurn = requireTurn(running);
+      const runningMission = await updateMissionForDispatch(runningTurn);
+      const runningSynced = await updateTurn(next.id, (current) => ({
         ...current,
-        dispatchStatus: 'running',
-        dispatchStage: 'dispatch',
-        dispatchError: null,
+        mission: runningMission ?? current.mission,
+        workflowRun: workflowRunForTurn({ ...current, mission: runningMission ?? current.mission }),
       }));
       void dispatchTurn({ turnId: next.id, agentAdapter: input.agentAdapter }).catch(async (error) => {
         const message = error instanceof Error ? error.message : 'dispatch_failed';
@@ -239,7 +378,7 @@ export async function approveTurn(input: ApprovalInput): Promise<DispatchRespons
           dispatchError: message,
         })).catch(() => {});
       });
-      return dispatchResponse(requireTurn(running));
+      return dispatchResponse(requireTurn(runningSynced));
     }
     return dispatchTurn({ turnId: next.id, agentAdapter: input.agentAdapter });
   }
@@ -361,14 +500,30 @@ export async function dispatchTurn(input: DispatchInput): Promise<DispatchRespon
         plan: { ...current.plan, tasks },
         dispatchStage: status === 'running' ? `running:${taskId}` : current.dispatchStage,
         workflowRun: {
-          ...(current.workflowRun ?? { stageStates: {} }),
+          ...(current.workflowRun ?? { activeStageId: null, stageStates: {}, taskStates: {} }),
           stageStates: {
             ...(current.workflowRun?.stageStates ?? {}),
             [taskId]: { status: schedulerToStage[status] },
           },
+          taskStates: {
+            ...(current.workflowRun?.taskStates ?? {}),
+            [taskId]: {
+              status: schedulerToStage[status],
+              stageId: tasks.find((task) => task.id === taskId)?.stageId ?? null,
+            },
+          },
         },
       };
     });
+    const current = await getTurn(turn.id);
+    if (current) {
+      const mission = await updateMissionForDispatch(current);
+      await updateTurn(turn.id, (latest) => ({
+        ...latest,
+        mission: mission ?? latest.mission,
+        workflowRun: workflowRunForTurn({ ...latest, mission: mission ?? latest.mission }),
+      }));
+    }
   };
 
   const run = await runScheduler({
@@ -424,7 +579,6 @@ export async function dispatchTurn(input: DispatchInput): Promise<DispatchRespon
   const failed = run.tasks.some(
     (task) => (task.status === 'failed' || task.status === 'blocked') && !repaired.has(task.id),
   );
-  const workflowRun = workflowRunFromTasks(run.tasks);
   // Persist any fixer tasks the scheduler derived at runtime back into the plan,
   // so the UI (roundtable + todo list, which read plan.tasks) shows the fix pass
   // — front and back stay in sync on the real executed graph.
@@ -437,28 +591,53 @@ export async function dispatchTurn(input: DispatchInput): Promise<DispatchRespon
       assignee: task.assignee,
       owner: task.owner,
       role: task.role,
+      stageId: task.stageId,
+      requiredCapabilities: task.requiredCapabilities,
       brief: task.brief,
       deps: task.deps,
       parallel: task.parallel,
       ...(task.producedFor !== undefined ? { producedFor: task.producedFor } : {}),
       ...(task.fixRound !== undefined ? { fixRound: task.fixRound } : {}),
     }));
-  const completed = await updateTurn(turn.id, (current) => ({
+  const completed = await updateTurn(turn.id, (current) => {
+    const nextTurn = {
+      ...current,
+      plan: derivedTasks.length > 0
+        ? { ...current.plan, tasks: [...current.plan.tasks, ...derivedTasks] }
+        : current.plan,
+      dispatchStatus: failed ? 'failed' as const : 'completed' as const,
+      dispatchAdapter: adapter,
+      dispatchedAt: nowIso(),
+      dispatchStage: failed ? 'failed' : 'done',
+      dispatchError: failed ? 'one_or_more_tasks_failed' : null,
+      dispatchWorkspacePath: workspace,
+      dispatch: records,
+      artifacts,
+    };
+    const legacyRun = workflowRunFromTasks(run.tasks);
+    const missionRun = workflowRunForTurn(nextTurn);
+    return {
+      ...nextTurn,
+      workflowRun: {
+        ...missionRun,
+        stageStates: {
+          ...missionRun.stageStates,
+          ...legacyRun.stageStates,
+        },
+        taskStates: {
+          ...missionRun.taskStates,
+          ...legacyRun.taskStates,
+        },
+      },
+    };
+  });
+  const completedTurn = requireTurn(completed);
+  const mission = await updateMissionForDispatch(completedTurn);
+  const finalTurn = requireTurn(await updateTurn(completedTurn.id, (current) => ({
     ...current,
-    plan: derivedTasks.length > 0
-      ? { ...current.plan, tasks: [...current.plan.tasks, ...derivedTasks] }
-      : current.plan,
-    dispatchStatus: failed ? 'failed' : 'completed',
-    dispatchAdapter: adapter,
-    dispatchedAt: nowIso(),
-    dispatchStage: failed ? 'failed' : 'done',
-    dispatchError: failed ? 'one_or_more_tasks_failed' : null,
-    dispatchWorkspacePath: workspace,
-    dispatch: records,
-    artifacts,
-    workflowRun,
-  }));
-  const finalTurn = requireTurn(completed);
+    mission: mission ?? current.mission,
+    workflowRun: workflowRunForTurn({ ...current, mission: mission ?? current.mission }),
+  })));
   if (finalTurn.localChatId) {
     await mutateData((data) => {
       upsertArtifacts(data.artifacts, finalTurn.artifacts);
@@ -484,6 +663,8 @@ function turnResponse(turn: LocalTurn) {
   return {
     ok: true,
     id: turn.id,
+    missionId: turn.missionId,
+    workflowTemplateId: turn.workflowTemplateId,
     provider: turn.provider,
     model: turn.model,
     pmMessage: turn.pmMessage,
@@ -499,6 +680,7 @@ function turnResponse(turn: LocalTurn) {
     plan: turn.plan,
     workflow: turn.workflow,
     workflowRun: turn.workflowRun,
+    mission: turn.mission,
   };
 }
 
@@ -506,6 +688,8 @@ function dispatchResponse(turn: LocalTurn) {
   return {
     ok: true,
     id: turn.id,
+    missionId: turn.missionId,
+    workflowTemplateId: turn.workflowTemplateId,
     needsApproval: turn.needsApproval,
     approvalStatus: turn.approvalStatus,
     approvedAt: turn.approvedAt,
@@ -518,6 +702,7 @@ function dispatchResponse(turn: LocalTurn) {
     records: turn.dispatch,
     artifacts: turn.artifacts,
     workflowRun: turn.workflowRun,
+    mission: turn.mission,
   };
 }
 
@@ -573,15 +758,15 @@ function planFromMessage(message: string): Plan {
     return {
       summary: `Plan for: ${base}`,
       tasks: [
-        taskForAgent('task_planning', `Plan ${base}`, planner(), goal, [], false),
-        taskForAgent(`task_${implementer.id}`, titleForAgent(implementer, base), implementer, goal, ['task_planning'], false),
-        taskForAgent(`task_${reviewerAgent.id}`, titleForAgent(reviewerAgent, base), reviewerAgent, goal, [`task_${implementer.id}`], false),
+        taskForAgent('task_planning', `Plan ${base}`, planner(), goal, [], false, 'plan'),
+        taskForAgent(`task_${implementer.id}`, titleForAgent(implementer, base), implementer, goal, ['task_planning'], false, 'build'),
+        taskForAgent(`task_${reviewerAgent.id}`, titleForAgent(reviewerAgent, base), reviewerAgent, goal, [`task_${implementer.id}`], false, 'review'),
       ],
     };
   }
 
   if (startsWithPlanning || explicitPlanningOnly) {
-    tasks.push(taskForAgent('task_planning', `Plan ${base}`, planner(), goal, [], false));
+    tasks.push(taskForAgent('task_planning', `Plan ${base}`, planner(), goal, [], false, 'plan'));
   }
 
   if (!explicitPlanningOnly) {
@@ -595,6 +780,7 @@ function planFromMessage(message: string): Plan {
         goal,
         previousTaskId ? [previousTaskId] : [],
         false,
+        stageIdForAgent(agent),
       ));
       previousTaskId = idValue;
     }
@@ -602,7 +788,7 @@ function planFromMessage(message: string): Plan {
 
   return {
     summary: `Plan for: ${base}`,
-    tasks: tasks.length > 0 ? tasks : [taskForAgent('task_planning', `Plan ${base}`, planner(), goal, [], false)],
+    tasks: tasks.length > 0 ? tasks : [taskForAgent('task_planning', `Plan ${base}`, planner(), goal, [], false, 'plan')],
   };
 }
 
@@ -613,6 +799,7 @@ function taskForAgent(
   message: string,
   deps: string[],
   parallel: boolean,
+  stageId: string,
 ): PlanTask {
   return {
     id: idValue,
@@ -620,10 +807,19 @@ function taskForAgent(
     assignee: agent.assignee,
     owner: agent.id,
     role: agent.role,
+    stageId,
+    requiredCapabilities: agent.capabilities,
     brief: `${title}. Agent: ${agent.displayName}. Role: ${agent.role}. User request: ${message}`,
     deps,
     parallel,
   };
+}
+
+function stageIdForAgent(agent: AgentProfile): string {
+  if (agent.role === 'planner' || agent.role === 'architect' || agent.role === 'pm') return 'plan';
+  if (agent.role === 'reviewer') return 'review';
+  if (agent.role === 'fixer') return 'repair';
+  return 'build';
 }
 
 // Concrete title for a downstream task AFTER the planner has run. At this point
@@ -808,8 +1004,15 @@ function workflowRunFromTasks(tasks: ScheduledTask[]): WorkflowRun {
     pending: 'pending',
   };
   return {
+    activeStageId: null,
     stageStates: Object.fromEntries(
       tasks.map((task) => [task.id, { status: map[task.status] ?? 'pending' }]),
+    ),
+    taskStates: Object.fromEntries(
+      tasks.map((task) => [task.id, {
+        status: map[task.status] ?? 'pending',
+        stageId: task.stageId ?? null,
+      }]),
     ),
   };
 }
@@ -862,6 +1065,8 @@ function makeFixerTask(
     assignee: fixer.assignee,
     owner: fixer.id,
     role: fixer.role,
+    stageId: 'repair',
+    requiredCapabilities: fixer.capabilities,
     brief: fromReview
       ? `The reviewer found blocking issues (${error.message}). Apply focused fixes to the `
         + `implementer's deliverable so each Critical/High issue is resolved, and output the `
@@ -875,18 +1080,45 @@ function makeFixerTask(
 }
 
 function handoffForTurn(actor: Actor | null | undefined, chatId: string, turn: LocalTurn): Handoff {
+  const mission = turn.mission ?? buildMissionSnapshot({
+    ownerId: turn.ownerId,
+    chatId: turn.localChatId,
+    turnId: turn.id,
+    missionId: turn.missionId,
+    goal: turn.message,
+    plan: turn.plan,
+    needsClarification: turn.needsClarification,
+    workflowTemplateId: turn.workflowTemplateId,
+  });
+  const firstTask = turn.plan.tasks[0];
+  const v2 = firstTask
+    ? buildHandoffCardV2({ mission, turn, task: firstTask, artifacts: turn.artifacts, generatedAt: turn.createdAt })
+    : null;
   return {
     id: id('handoff'),
     ownerId: actor?.id ?? 'local-user',
     chatId,
     createdAt: nowIso(),
     card: {
+      protocolVersion: v2?.protocolVersion ?? 'roundtable.handoff.v1',
+      missionId: turn.missionId,
+      handoffV2: v2,
       id: `handoff-${turn.id}`,
       from: 'orchestrator',
       to: turn.plan.tasks[0]?.assignee ?? '@planning',
       scenario: 'dispatch',
       task: turn.message,
+      userIntent: turn.message,
+      taskBrief: firstTask?.brief ?? turn.plan.summary,
       pinnedMessages: [],
+      rolesInGroup: AGENT_ROSTER,
+      previousAgent: null,
+      relevantArtifacts: turn.artifacts.map((artifact) => ({
+        id: artifact.id,
+        kind: artifact.kind,
+        title: artifact.title,
+      })),
+      fullHistoryRef: turn.localChatId ? `chat://${turn.localChatId}` : `turn://${turn.id}`,
       artifacts: turn.artifacts.map((artifact) => ({
         id: artifact.id,
         kind: artifact.kind,

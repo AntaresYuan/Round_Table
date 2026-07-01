@@ -60,11 +60,54 @@ function LocalLiveThread({ turns, agents, turnActions }) {
 
 const STAGE_STATUS_STYLE = {
   done: { color: 'var(--ok)', label: 'done' },
+  running: { color: 'var(--accent)', label: 'running' },
   active: { color: 'var(--accent)', label: 'running' },
   blocked: { color: 'var(--warn, #b8860b)', label: 'blocked' },
   failed: { color: 'var(--bad)', label: 'failed' },
   pending: { color: 'var(--text-faint)', label: 'pending' },
 };
+
+const MISSION_STATUS_STYLE = {
+  awaiting_clarification: { color: 'var(--warn)', label: 'needs details' },
+  awaiting_approval: { color: 'var(--warn)', label: 'awaiting approval' },
+  running: { color: 'var(--run)', label: 'running' },
+  blocked: { color: 'var(--warn)', label: 'blocked' },
+  completed: { color: 'var(--ok)', label: 'ready' },
+  failed: { color: 'var(--bad)', label: 'failed' },
+};
+
+function MissionHeader({ mission, workflow }) {
+  if (!mission) return null;
+  const sty = MISSION_STATUS_STYLE[mission.status] || MISSION_STATUS_STYLE.awaiting_approval;
+  const checkpoint = (mission.checkpoints || []).find((cp) => cp.status === 'pending' || cp.status === 'blocked');
+  const currentStage = (workflow?.stages || []).find((stage) => stage.id === mission.currentStageId)
+    || (mission.stages || []).find((stage) => stage.id === mission.currentStageId);
+  return (
+    <div className="rt-rise" style={{ margin: '0 0 10px', border: '1px solid var(--border)',
+      borderLeft: `3px solid ${sty.color}`, borderRadius: 'var(--r-card)', background: 'var(--surface)',
+      boxShadow: 'var(--shadow-card)', overflow: 'hidden' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '11px 14px', flexWrap: 'wrap' }}>
+        <span style={{ display: 'grid', placeItems: 'center', width: 28, height: 28, borderRadius: 8,
+          background: alpha(sty.color, 14), color: sty.color }}>
+          <Icon name={mission.status === 'completed' ? 'check' : 'layers'} size={15} />
+        </span>
+        <div style={{ flex: 1, minWidth: 180 }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 13.5, fontWeight: 800, color: 'var(--text)' }}>Mission</span>
+            <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>{mission.workflowTemplateName || workflow?.name || 'Workflow'}</span>
+            <span className="mono" style={{ fontSize: 10.5, color: 'var(--text-faint)' }}>{mission.id}</span>
+          </div>
+          <div style={{ marginTop: 3, fontSize: 12.5, color: 'var(--text-muted)', lineHeight: 1.35 }}>
+            {currentStage ? `Current stage: ${currentStage.name}` : 'Preparing mission state'}
+            {checkpoint?.requiredAction ? ` · ${checkpoint.requiredAction}` : ''}
+          </div>
+        </div>
+        <span style={{ fontSize: 11.5, color: sty.color, padding: '3px 8px', borderRadius: 999,
+          background: alpha(sty.color, 14), fontWeight: 800 }}>{sty.label}</span>
+      </div>
+    </div>
+  );
+}
 
 // The planner needs more detail before it can build. Render its questions as
 // pick-one cards — a nocode user just clicks an option per question, then submits.
@@ -157,8 +200,11 @@ function LocalLiveTurn({ turn, agents, turnActions, showPreview }) {
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
             <span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--pm)' }}>Roundtable</span>
-            <span className="mono" style={{ fontSize: 10, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--text-faint)' }}>agent chain</span>
+            <span className="mono" style={{ fontSize: 10, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--text-faint)' }}>mission run</span>
           </div>
+          {turn.result?.mission && (
+            <MissionHeader mission={turn.result.mission} workflow={turn.result.workflow} />
+          )}
           {turn.status === 'pending' && (
             <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, color: 'var(--text-muted)', fontSize: 13.5 }}>
               <Spinner size={13} color="var(--text-muted)" /> running agents…
@@ -255,7 +301,13 @@ function StageCard({ stage, stageRun, artifacts, agents }) {
   const roles = new Set(
     stage.seats.filter((s) => s.ref.kind === 'role').map((s) => s.ref.role),
   );
-  const stageArtifacts = artifacts.filter((a) => roles.has(a.ownerAgentId));
+  const explicitIds = new Set(stageRun?.artifactIds || []);
+  const taskIds = new Set(stageRun?.taskIds || []);
+  const stageArtifacts = artifacts.filter((a) =>
+    explicitIds.has(a.id)
+    || [...taskIds].some((taskId) => a.id.startsWith(`${taskId}_`))
+    || roles.has(a.ownerAgentId),
+  );
   return (
     <div className="rt-rise" style={{ marginTop: 10, border: `1px solid ${alpha(sty.color, 35)}`,
       borderRadius: 'var(--r-card)', background: 'var(--surface)', boxShadow: 'var(--shadow-card)', overflow: 'hidden' }}>
@@ -415,7 +467,10 @@ function StageCards({ workflow, workflowRun, artifacts, agents, dispatchStatus }
   );
   const running = dispatchStatus === 'running';
   const firstUnfinishedId = stages.find(
-    (s) => (workflowRun.stageStates?.[s.id]?.status || 'pending') !== 'done',
+    (s) => {
+      const status = workflowRun.stageStates?.[s.id]?.status || 'pending';
+      return status !== 'done' && status !== 'completed';
+    },
   )?.id;
 
   const visible = stages.filter((s) => {
@@ -430,7 +485,9 @@ function StageCards({ workflow, workflowRun, artifacts, agents, dispatchStatus }
       {visible.map((stage) => {
         let stageRun = workflowRun.stageStates?.[stage.id];
         const status = stageRun?.status || 'pending';
-        if (running && status === 'pending' && stage.id === firstUnfinishedId) {
+        if (stageRun?.status === 'running') {
+          stageRun = { ...stageRun, status: 'active' };
+        } else if (running && status === 'pending' && stage.id === firstUnfinishedId) {
           stageRun = {
             ...(stageRun || {}),
             status: 'active',

@@ -125,6 +125,8 @@ function storedTurnToLiveTurn(turn) {
           result: {
             ok: true,
             id: turn.id,
+            missionId: turn.missionId,
+            workflowTemplateId: turn.workflowTemplateId,
             provider: turn.provider,
             model: turn.model,
             pmMessage: turn.pmMessage,
@@ -143,6 +145,7 @@ function storedTurnToLiveTurn(turn) {
             plan: turn.plan,
             workflow: turn.workflow,
             workflowRun: turn.workflowRun,
+            mission: turn.mission,
             needsClarification: turn.needsClarification,
             clarifyQuestions: turn.clarifyQuestions,
             clarifyAnswers: turn.clarifyAnswers,
@@ -688,7 +691,7 @@ function App() {
     setSelectedWorkbenchId(created.id);
     return created;
   };
-  const sendLocalTurn = async (message, turnId, chatIdOverride) => {
+  const sendLocalTurn = async (message, turnId, chatIdOverride, workflowTemplateId) => {
     const id = turnId || 'live-' + Date.now();
     const createdAt = new Date().toISOString();
     setInspectorTab('chat');
@@ -704,6 +707,7 @@ function App() {
           message,
           turnId: id,
           chatId: chatIdOverride ?? localChatId,
+          ...(workflowTemplateId ? { workflowTemplateId } : {}),
           ...preferredAgentAdapterRequest(),
         }),
       });
@@ -790,6 +794,7 @@ function App() {
                 dispatchWorkspacePath: data.workspacePath,
                 dispatch: data.records,
                 artifacts: data.artifacts,
+                mission: data.mission,
                 ...(data.workflowRun ? { workflowRun: data.workflowRun } : {}),
               },
             }
@@ -866,29 +871,29 @@ function App() {
       turn.id === turnId ? { ...turn, discarded: true } : turn
     )));
   };
-  const createLocalTask = (goal) => {
+  const createLocalTask = (goal, workflowTemplateId) => {
     setModal(null);
     setView('roundtable');
     setInspectorTab('chat');
     setNotesOpen(true);
-    sendLocalTurn(goal);
+    sendLocalTurn(goal, undefined, undefined, workflowTemplateId);
   };
-  const sendComposerMessage = async (message) => {
+  const sendComposerMessage = async (message, workflowTemplateId) => {
     if (authed) {
       if (activeChatId) {
         createMessage.mutate({ chatId: activeChatId, content: message });
-        sendLocalTurn(message, undefined, activeChatId);
+        sendLocalTurn(message, undefined, activeChatId, workflowTemplateId);
       } else {
         const workbench = await ensureWorkbench();
         const chat = await createChat.mutateAsync({ title: message.slice(0, 160), workbenchId: workbench.id });
         if (chat) {
           await createMessage.mutateAsync({ chatId: chat.id, content: message });
-          sendLocalTurn(message, undefined, chat.id);
+          sendLocalTurn(message, undefined, chat.id, workflowTemplateId);
         }
       }
       return;
     }
-    sendLocalTurn(message);
+    sendLocalTurn(message, undefined, undefined, workflowTemplateId);
   };
   const memory = {
     live: authed,
@@ -997,7 +1002,7 @@ function App() {
                               <div style={{ display: 'flex', gap: 9, justifyContent: 'center' }}>
                                 <button onClick={() => setModal('task')} style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '10px 16px',
                                   borderRadius: 'var(--r-sm)', border: 'none', cursor: 'pointer', background: 'var(--accent)', color: '#fff',
-                                  font: 'inherit', fontSize: 13, fontWeight: 500 }}><Icon name="plus" size={15} /> Start a task</button>
+                                  font: 'inherit', fontSize: 13, fontWeight: 500 }}><Icon name="plus" size={15} /> Start a Mission</button>
                               </div>
                             </div>
                           </div>
@@ -1037,17 +1042,17 @@ function App() {
         activeTask={(['working', 'speaking', 'thinking'].includes(st.status[dmAgent])) ? (RT.PLAN.tasks.find((tk) => tk.owner === dmAgent) || {}).id : null}
         onClose={() => setDmAgent(null)} />}
       {modal === 'task' && <NewTaskModal workbench={railWorkbench} members={memberIds} agents={agents}
-        onClose={() => setModal(null)} onCreate={async (goal) => {
+        onClose={() => setModal(null)} onCreate={async ({ goal, workflowTemplateId }) => {
           setModal(null);
           if (authed) {
             const workbench = await ensureWorkbench();
             const chat = await createChat.mutateAsync({ title: goal.slice(0, 160), workbenchId: workbench.id });
             if (chat) {
               await createMessage.mutateAsync({ chatId: chat.id, content: goal });
-              sendLocalTurn(goal, undefined, chat.id);
+              sendLocalTurn(goal, undefined, chat.id, workflowTemplateId);
             }
           } else {
-            createLocalTask(goal);
+            createLocalTask(goal, workflowTemplateId);
           }
         }} />}
       {modal === 'table' && <NewWorkbenchModal agents={agents} onClose={() => setModal(null)} onCreate={(input) => {

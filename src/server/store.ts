@@ -7,6 +7,7 @@ import type {
   Handoff,
   LocalTurn,
   Message,
+  Mission,
   UserProfile,
   Workbench,
   WorkbenchPin,
@@ -23,6 +24,7 @@ export type RoundtableData = {
   profiles: UserProfile[];
   workbenchPins: WorkbenchPin[];
   turns: LocalTurn[];
+  missions: Mission[];
 };
 
 export function nowIso(): string {
@@ -78,6 +80,7 @@ function emptyData(): RoundtableData {
     profiles: [],
     workbenchPins: [],
     turns: [],
+    missions: [],
   };
 }
 
@@ -93,6 +96,7 @@ function normalizeData(raw: Partial<RoundtableData>): RoundtableData {
     profiles: Array.isArray(raw.profiles) ? raw.profiles : [],
     workbenchPins: Array.isArray(raw.workbenchPins) ? raw.workbenchPins : [],
     turns: Array.isArray(raw.turns) ? raw.turns : [],
+    missions: Array.isArray(raw.missions) ? raw.missions : [],
   };
 }
 

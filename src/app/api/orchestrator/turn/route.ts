@@ -6,6 +6,7 @@ const BodySchema = z.object({
   message: z.string().min(1),
   turnId: z.string().min(1).optional(),
   chatId: z.string().min(1).optional(),
+  workflowTemplateId: z.string().min(1).optional(),
   agentAdapter: z.string().optional(),
 });
 

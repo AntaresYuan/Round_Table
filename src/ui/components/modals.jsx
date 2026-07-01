@@ -127,9 +127,10 @@ function NewWorkbenchModal({ agents, onClose, onCreate }) {
   );
 }
 
-/* ---- New Task ------------------------------------------------------------ */
+/* ---- New Mission --------------------------------------------------------- */
 function NewTaskModal({ workbench, members, agents, onClose, onCreate }) {
   const [goal, setGoal] = useStateM('');
+  const [workflowTemplateId, setWorkflowTemplateId] = useStateM('wf-feature-builder');
   const polish = trpc.ai.polish.useMutation({ onSuccess: (r) => setGoal(r.text) });
   const { status: authStatus } = useSession();
   const suggestQ = trpc.ai.suggestTasks.useQuery(undefined, {
@@ -137,14 +138,53 @@ function NewTaskModal({ workbench, members, agents, onClose, onCreate }) {
     retry: false,
     staleTime: 60_000,
   });
+  const missionTemplates = [
+    {
+      id: 'wf-feature-builder',
+      name: 'Feature Builder',
+      tag: 'Flagship',
+      desc: 'Plan, build, review, and prepare a trusted delivery report.',
+      pipe: [
+        { icon: 'search', label: 'Clarify' },
+        { icon: 'layers', label: 'Plan' },
+        { icon: 'code', label: 'Build' },
+        { icon: 'eye', label: 'Review' },
+        { icon: 'rocket', label: 'Report' },
+      ],
+    },
+    {
+      id: 'wf-bug-fixer',
+      name: 'Bug Fixer',
+      tag: 'Diagnosis',
+      desc: 'Diagnose, patch, verify, and summarize residual risk.',
+      pipe: [
+        { icon: 'search', label: 'Diagnose' },
+        { icon: 'wrench', label: 'Patch' },
+        { icon: 'eye', label: 'Verify' },
+        { icon: 'rocket', label: 'Report' },
+      ],
+    },
+    {
+      id: 'wf-codebase-onboarding',
+      name: 'Codebase Onboarding',
+      tag: 'Discovery',
+      desc: 'Map an unfamiliar repo and propose starter tasks.',
+      pipe: [
+        { icon: 'layers', label: 'Map' },
+        { icon: 'eye', label: 'Check' },
+        { icon: 'rocket', label: 'Next tasks' },
+      ],
+    },
+  ];
+  const selectedTemplate = missionTemplates.find((template) => template.id === workflowTemplateId) || missionTemplates[0];
   // Personalized suggestions when signed in (+ LLM key); static fallback otherwise.
   const examples = suggestQ.data ?? ['A pricing page with monthly/annual toggle', 'A REST endpoint for CSV export', 'Dark mode across the app'];
   return (
-    <Modal title="New task" sub={`${workbench?.name} will pick it up and run its workflow`} icon="plus" onClose={onClose} width={560}
-      footer={<><Btn onClick={onClose}>Cancel</Btn><Btn primary disabled={!goal.trim()} onClick={() => onCreate(goal)}>Start task</Btn></>}>
-      <div style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 6 }}>What should the team build?</div>
+    <Modal title="New Mission" sub={`${workbench?.name} will run a real workflow from this goal`} icon="plus" onClose={onClose} width={680}
+      footer={<><Btn onClick={onClose}>Cancel</Btn><Btn primary disabled={!goal.trim()} onClick={() => onCreate({ goal, workflowTemplateId })}>Start Mission</Btn></>}>
+      <div style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 6 }}>Mission goal</div>
       <textarea value={goal} onChange={(e) => setGoal(e.target.value)} rows={3} autoFocus
-        placeholder="Describe the outcome in plain language — the facilitator will plan it." style={{ ...fieldStyle, resize: 'vertical' }} />
+        placeholder="Describe the outcome in plain language — Roundtable will create a Mission, plan it, and wait for approval." style={{ ...fieldStyle, resize: 'vertical' }} />
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
         <button onClick={() => goal.trim() && polish.mutate({ text: goal.trim() })} disabled={!goal.trim() || polish.isPending}
           style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 'var(--r-chip)',
@@ -159,11 +199,36 @@ function NewTaskModal({ workbench, members, agents, onClose, onCreate }) {
             border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-muted)', font: 'inherit', fontSize: 11.5 }}>{ex}</button>
         ))}
       </div>
+      <div style={{ marginTop: 18 }}>
+        <div style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 9 }}>Workflow template</div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 9 }}>
+          {missionTemplates.map((template) => {
+            const active = workflowTemplateId === template.id;
+            return (
+              <button key={template.id} onClick={() => setWorkflowTemplateId(template.id)}
+                style={{ textAlign: 'left', padding: '11px 12px', borderRadius: 'var(--r-card)', cursor: 'pointer',
+                  font: 'inherit', background: active ? tint('var(--accent)', 8) : 'var(--surface-2)',
+                  border: `1.5px solid ${active ? 'var(--accent)' : 'var(--border)'}` }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4, minWidth: 0 }}>
+                  <span style={{ fontSize: 12.5, fontWeight: 750, color: 'var(--text)', overflow: 'hidden',
+                    textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{template.name}</span>
+                  {template.tag && <span style={{ fontSize: 9.5, fontWeight: 700, color: 'var(--accent)',
+                    background: tint('var(--accent)', 14), borderRadius: 4, padding: '1px 5px', flexShrink: 0 }}>{template.tag}</span>}
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.35 }}>{template.desc}</div>
+              </button>
+            );
+          })}
+        </div>
+        <div style={{ marginTop: 10, padding: '11px 12px', borderRadius: 'var(--r-card)', background: 'var(--surface-2)', border: '1px solid var(--border)' }}>
+          <Pipeline steps={selectedTemplate.pipe} />
+        </div>
+      </div>
       <div style={{ marginTop: 18, padding: '12px 14px', borderRadius: 'var(--r-card)', background: 'var(--surface-2)', border: '1px solid var(--border)' }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 9, flexWrap: 'wrap' }}>
-          <span style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--text-muted)' }}>Members on the job</span>
+          <span style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--text-muted)' }}>Mission team</span>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 10.5, color: 'var(--text-faint)' }}>
-            <Icon name="eye" size={11} /> read-only · this workbench's fixed team — change members in the sidebar, or per stage in Workflow
+            <Icon name="eye" size={11} /> routed by capabilities, then by role fallback
           </span>
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>

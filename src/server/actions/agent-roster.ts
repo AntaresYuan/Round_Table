@@ -1,4 +1,4 @@
-export type AgentRole = 'planner' | 'pm' | 'architect' | 'implementer' | 'reviewer' | 'fixer';
+import type { AgentCard, AgentRole, ArtifactKind } from '../types.js';
 
 export type AgentProfile = {
   id: string;
@@ -6,6 +6,11 @@ export type AgentProfile = {
   assignee: string;
   displayName: string;
   aliases: string[];
+  capabilities: string[];
+  skills: string[];
+  preferredTaskTypes: string[];
+  supportedArtifactTypes: ArtifactKind[];
+  safetyConstraints: string[];
 };
 
 export const AGENT_ROSTER: AgentProfile[] = [
@@ -15,6 +20,11 @@ export const AGENT_ROSTER: AgentProfile[] = [
     assignee: '@planning',
     displayName: 'Planning',
     aliases: ['planning', 'planner', 'orchestrator', 'all'],
+    capabilities: ['mission.planning', 'workflow.decomposition', 'handoff.context_packaging'],
+    skills: ['clarify_requirements', 'split_tasks', 'sequence_dependencies'],
+    preferredTaskTypes: ['plan', 'clarify', 'handoff'],
+    supportedArtifactTypes: ['markdown', 'code', 'spec'],
+    safetyConstraints: ['ask_before_dispatch', 'summarize_context_only'],
   },
   {
     id: 'mira',
@@ -22,6 +32,11 @@ export const AGENT_ROSTER: AgentProfile[] = [
     assignee: '@pm',
     displayName: 'PM',
     aliases: ['pm', 'product', 'manager'],
+    capabilities: ['product.briefing', 'requirements.coverage', 'novice.copy'],
+    skills: ['write_brief', 'define_acceptance_criteria', 'surface_tradeoffs'],
+    preferredTaskTypes: ['brief', 'requirements', 'checkpoint'],
+    supportedArtifactTypes: ['markdown', 'spec'],
+    safetyConstraints: ['call_out_assumptions', 'avoid_hidden_scope_growth'],
   },
   {
     id: 'nova',
@@ -29,6 +44,11 @@ export const AGENT_ROSTER: AgentProfile[] = [
     assignee: '@nova',
     displayName: 'Nova',
     aliases: ['nova', 'architect', 'architecture'],
+    capabilities: ['system.design', 'dependency.mapping', 'technical.plan'],
+    skills: ['architecture_map', 'contract_design', 'risk_modeling'],
+    preferredTaskTypes: ['architecture', 'design', 'research'],
+    supportedArtifactTypes: ['markdown', 'code', 'spec'],
+    safetyConstraints: ['prefer_existing_patterns', 'note_integration_risks'],
   },
   {
     id: 'atlas',
@@ -36,6 +56,11 @@ export const AGENT_ROSTER: AgentProfile[] = [
     assignee: '@atlas',
     displayName: 'Atlas',
     aliases: ['atlas', 'implementer', 'frontend', 'dev'],
+    capabilities: ['frontend.implementation', 'ui.integration', 'artifact.preview'],
+    skills: ['react_ui', 'css_systems', 'component_integration'],
+    preferredTaskTypes: ['frontend', 'ui', 'preview'],
+    supportedArtifactTypes: ['code', 'html', 'preview', 'diff'],
+    safetyConstraints: ['preserve_design_system', 'avoid_fixture_only_outputs'],
   },
   {
     id: 'beam',
@@ -43,6 +68,11 @@ export const AGENT_ROSTER: AgentProfile[] = [
     assignee: '@beam',
     displayName: 'Beam',
     aliases: ['beam', 'backend', 'api'],
+    capabilities: ['backend.implementation', 'api.integration', 'data.persistence'],
+    skills: ['server_actions', 'api_routes', 'schema_validation'],
+    preferredTaskTypes: ['backend', 'api', 'database'],
+    supportedArtifactTypes: ['code', 'markdown', 'spec'],
+    safetyConstraints: ['validate_inputs', 'avoid_secret_exposure'],
   },
   {
     id: 'vera',
@@ -50,6 +80,11 @@ export const AGENT_ROSTER: AgentProfile[] = [
     assignee: '@vera',
     displayName: 'Vera',
     aliases: ['vera', 'reviewer', 'review'],
+    capabilities: ['review.quality_gate', 'risk.assessment', 'test_evidence'],
+    skills: ['code_review', 'requirements_trace', 'confidence_report'],
+    preferredTaskTypes: ['review', 'qa', 'final_report'],
+    supportedArtifactTypes: ['markdown', 'diff', 'spec'],
+    safetyConstraints: ['block_high_risk_findings', 'state_test_gaps'],
   },
   {
     id: 'fixer',
@@ -57,8 +92,31 @@ export const AGENT_ROSTER: AgentProfile[] = [
     assignee: '@fixer',
     displayName: 'Fixer',
     aliases: ['fixer', 'fix', 'debugger'],
+    capabilities: ['repair.implementation', 'test_failure_repair', 'focused_changes'],
+    skills: ['debug_failures', 'apply_review_fixes', 'summarize_repairs'],
+    preferredTaskTypes: ['repair', 'fix', 'debug'],
+    supportedArtifactTypes: ['code', 'diff', 'markdown'],
+    safetyConstraints: ['fix_only_reported_scope', 'preserve_working_outputs'],
   },
 ];
+
+export function agentCardFor(profile: AgentProfile): AgentCard {
+  return {
+    id: profile.id,
+    name: profile.displayName,
+    role: profile.role,
+    capabilities: [...profile.capabilities],
+    skills: [...profile.skills],
+    preferredTaskTypes: [...profile.preferredTaskTypes],
+    supportedArtifactTypes: [...profile.supportedArtifactTypes],
+    adapterMetadata: { assignee: profile.assignee },
+    safetyConstraints: [...profile.safetyConstraints],
+  };
+}
+
+export function agentCards(): AgentCard[] {
+  return AGENT_ROSTER.map(agentCardFor);
+}
 
 export function resolveAgentMention(value: string): AgentProfile | null {
   const normalized = value.replace(/^@/, '').trim().toLowerCase();

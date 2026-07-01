@@ -48,12 +48,107 @@ export type Artifact = {
   createdAt: string;
 };
 
+export type WorkflowSeat =
+  | { ref: { kind: 'user' } }
+  | { ref: { kind: 'role'; role: AgentRole; agentId?: string | undefined } };
+
+export type QualityGateKind =
+  | 'none'
+  | 'requirement_clarification'
+  | 'plan_approval'
+  | 'handoff_acceptance'
+  | 'test_failure_repair'
+  | 'reviewer_signoff'
+  | 'final_delivery_acceptance';
+
+export type QualityGate = {
+  kind: QualityGateKind;
+  required: boolean;
+  label: string;
+  description: string;
+  actions: string[];
+};
+
+export type WorkflowStage = {
+  id: string;
+  name: string;
+  icon: string;
+  kind: 'intake' | 'clarify' | 'plan' | 'work' | 'review' | 'repair' | 'ship';
+  desc: string;
+  seats: WorkflowSeat[];
+  fixed?: boolean | undefined;
+  parallelGroup?: string | undefined;
+  gate: QualityGate;
+  requiredInputs: string[];
+  expectedOutputs: string[];
+  requiredCapabilities: string[];
+};
+
+export type WorkflowTemplate = {
+  id: string;
+  name: string;
+  tag: string | null;
+  desc: string;
+  builtin: boolean;
+  version: number;
+  updatedAt: string;
+  planning: {
+    cut: 'by_role' | 'by_capability' | 'by_artifact';
+    clarifyThreshold: number;
+    maxClarifyQuestions: number;
+  };
+  stages: WorkflowStage[];
+};
+
+export type AgentRole = 'planner' | 'pm' | 'architect' | 'implementer' | 'reviewer' | 'fixer';
+
+export type AgentCard = {
+  id: string;
+  name: string;
+  role: AgentRole;
+  capabilities: string[];
+  skills: string[];
+  preferredTaskTypes: string[];
+  supportedArtifactTypes: ArtifactKind[];
+  adapterMetadata: Record<string, string>;
+  safetyConstraints: string[];
+};
+
 export type Handoff = {
   id: string;
   ownerId: string;
   chatId: string;
   card: Record<string, unknown>;
   createdAt: string;
+};
+
+export type HandoffCardV2 = {
+  protocolVersion: 'roundtable.handoff.v2';
+  cardId: string;
+  missionId: string;
+  sourceTaskId: string | null;
+  referenceTaskIds: string[];
+  fromAgent: string;
+  toAgent: string;
+  task: {
+    id: string;
+    title: string;
+    brief: string;
+    state: 'pending' | 'running' | 'completed' | 'failed' | 'blocked';
+  };
+  contextPackage: {
+    summary: string;
+    includedArtifactIds: string[];
+    omittedHistoryRef: string | null;
+  };
+  artifacts: Array<{ id: string; kind: ArtifactKind; title: string }>;
+  nextAction: string;
+  risks: string[];
+  provenance: {
+    generatedBy: string;
+    generatedAt: string;
+    agentCardSnapshot: AgentCard | null;
+  };
 };
 
 export type UserProfile = {
@@ -106,6 +201,8 @@ export type PlanTask = {
   assignee: string;
   owner?: string | undefined;
   role?: string | undefined;
+  stageId?: string | undefined;
+  requiredCapabilities?: string[] | undefined;
   brief: string;
   deps: string[];
   parallel: boolean;
@@ -149,17 +246,105 @@ export type DispatchRecord = {
   fixRound?: number | undefined;
 };
 
+export type WorkflowStageRunStatus = 'pending' | 'active' | 'running' | 'done' | 'blocked' | 'failed';
+
 export type WorkflowRun = {
-  // Per-task state keyed by task id. 'failed' is added so a per-task DAG run can
-  // distinguish a task that errored from one that was blocked by an upstream
-  // failure; the UI's STAGE_STATUS_STYLE already renders all of these.
-  stageStates: Record<string, { status: 'pending' | 'running' | 'done' | 'blocked' | 'failed' }>;
+  activeStageId: string | null;
+  // Kept keyed by both task id and stage id for compatibility with the old
+  // task-only UI and the newer Mission stage cards.
+  stageStates: Record<string, {
+    status: WorkflowStageRunStatus;
+    taskIds?: string[] | undefined;
+    artifactIds?: string[] | undefined;
+    gate?: QualityGate | undefined;
+    seatRuns?: Array<{
+      agentId: string;
+      status: WorkflowStageRunStatus;
+      artifactIds: string[];
+    }> | undefined;
+  }>;
+  taskStates: Record<string, { status: WorkflowStageRunStatus; stageId: string | null }>;
+};
+
+export type MissionStatus =
+  | 'awaiting_clarification'
+  | 'awaiting_approval'
+  | 'running'
+  | 'blocked'
+  | 'completed'
+  | 'failed';
+
+export type MissionStage = {
+  id: string;
+  name: string;
+  status: WorkflowStageRunStatus;
+  taskIds: string[];
+  artifactIds: string[];
+  gate: QualityGate;
+};
+
+export type MissionTask = {
+  id: string;
+  stageId: string | null;
+  title: string;
+  assignee: string;
+  owner: string | null;
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'blocked';
+  deps: string[];
+  artifactIds: string[];
+};
+
+export type MissionCheckpoint = {
+  id: string;
+  kind: QualityGateKind;
+  label: string;
+  status: 'pending' | 'satisfied' | 'blocked' | 'skipped';
+  requiredAction: string | null;
+  stageId: string;
+  createdAt: string;
+  resolvedAt: string | null;
+};
+
+export type MissionDecision = {
+  id: string;
+  stageId: string;
+  actor: 'user' | 'reviewer' | 'orchestrator';
+  summary: string;
+  createdAt: string;
+};
+
+export type MissionFinalDelivery = {
+  status: 'not_ready' | 'ready' | 'accepted' | 'rejected';
+  reportArtifactId: string | null;
+  recommendation: 'accept' | 'repair' | 'review';
+};
+
+export type Mission = {
+  id: string;
+  ownerId: string | null;
+  chatId: string | null;
+  sourceTurnId: string;
+  goal: string;
+  status: MissionStatus;
+  workflowTemplateId: string;
+  workflowTemplateName: string;
+  currentStageId: string | null;
+  stages: MissionStage[];
+  tasks: MissionTask[];
+  checkpoints: MissionCheckpoint[];
+  decisions: MissionDecision[];
+  artifactIds: string[];
+  finalDelivery: MissionFinalDelivery;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type LocalTurn = {
   id: string;
   localChatId: string | null;
   ownerId: string | null;
+  missionId: string;
+  workflowTemplateId: string;
   message: string;
   status: 'pending' | 'done' | 'error';
   createdAt: string;
@@ -186,5 +371,6 @@ export type LocalTurn = {
   plan: Plan;
   workflow: Record<string, unknown> | null;
   workflowRun: WorkflowRun | null;
+  mission: Mission | null;
   error: string | null;
 };

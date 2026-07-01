@@ -406,8 +406,8 @@ function liveStageFlags(workflow, workflowRun) {
   return workflow.stages.map((s) => {
     const status = workflowRun.stageStates?.[s.id]?.status || 'pending';
     return {
-      done: status === 'done',
-      active: !s.fixed && workflowRun.activeStageId === s.id,
+      done: status === 'done' || status === 'completed',
+      active: !s.fixed && (workflowRun.activeStageId === s.id || status === 'active' || status === 'running'),
     };
   });
 }

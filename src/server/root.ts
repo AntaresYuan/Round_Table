@@ -14,6 +14,7 @@ import {
   unpinWorkbench,
   updateUserProfile,
 } from './actions/memory-actions.js';
+import { getMission, listMissions, listWorkflowTemplates } from './actions/mission-actions.js';
 import { listArtifactsByChat, listHandoffsByChat } from './actions/read-actions.js';
 import { createWorkbench, listWorkbenches } from './actions/workbench-actions.js';
 import { createCallerFactory, createTRPCRouter, protectedProcedure, publicProcedure } from './trpc.js';
@@ -79,6 +80,16 @@ const workbenchPinnedRouter = createTRPCRouter({
     .mutation(({ ctx, input }) => unpinWorkbench(ctx.user, input)),
 });
 
+const missionsRouter = createTRPCRouter({
+  templates: protectedProcedure.query(() => listWorkflowTemplates()),
+  list: protectedProcedure
+    .input(z.object({ chatId: z.string().min(1).optional() }).optional())
+    .query(({ input }) => listMissions(input?.chatId)),
+  get: protectedProcedure
+    .input(idInput)
+    .query(({ input }) => getMission(input.id)),
+});
+
 const aiRouter = createTRPCRouter({
   // Public: the local (unauthenticated) build flow uses Polish too, so it must
   // not require a session. It only rewrites the text the caller sends.
@@ -94,6 +105,7 @@ export const appRouter = createTRPCRouter({
   chats: chatsRouter,
   handoffs: handoffsRouter,
   messages: messagesRouter,
+  missions: missionsRouter,
   userProfile: userProfileRouter,
   workbenches: workbenchesRouter,
   workbenchPinned: workbenchPinnedRouter,

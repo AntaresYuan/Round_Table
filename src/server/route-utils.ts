@@ -25,5 +25,6 @@ function knownClientError(message: string): boolean {
     'missing_message_content',
     'workbench_not_found',
     'chat_not_found',
+    'mission_not_found',
   ].includes(message);
 }
