@@ -414,6 +414,41 @@ export async function setMissionRejected(turn: LocalTurn): Promise<Mission | nul
   }));
 }
 
+export async function decideFinalDelivery(
+  turn: LocalTurn,
+  decision: 'accept' | 'repair',
+): Promise<Mission | null> {
+  return updateMission(turn.missionId, (mission) => ({
+    ...mission,
+    finalDelivery: {
+      ...mission.finalDelivery,
+      status: decision === 'accept' ? 'accepted' : 'rejected',
+      recommendation: decision === 'accept' ? 'accept' : 'repair',
+    },
+    checkpoints: mission.checkpoints.map((checkpoint) =>
+      checkpoint.kind === 'final_delivery_acceptance'
+        ? {
+            ...checkpoint,
+            status: decision === 'accept' ? 'satisfied' : 'blocked',
+            requiredAction: decision === 'accept' ? null : 'Request repair from the delivery state.',
+            resolvedAt: nowIso(),
+          }
+        : checkpoint,
+    ),
+    decisions: [
+      ...mission.decisions,
+      {
+        id: `decision_final_${turn.id}_${decision}`,
+        stageId: 'ship',
+        actor: 'user',
+        summary: decision === 'accept' ? 'Final delivery accepted.' : 'Final delivery rejected; repair requested.',
+        createdAt: nowIso(),
+      },
+    ],
+    updatedAt: nowIso(),
+  }));
+}
+
 export function workflowRunForTurn(turn: LocalTurn): WorkflowRun {
   const template = workflowTemplateById(turn.workflowTemplateId);
   const mission = turn.mission ?? missionFromTurnSnapshot(turn, template);

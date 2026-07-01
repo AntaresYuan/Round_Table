@@ -21,6 +21,7 @@ import {
   buildHandoffCardV2,
   buildMissionSnapshot,
   createMission,
+  decideFinalDelivery,
   selectWorkflowTemplate,
   setMissionRejected,
   updateMissionForDispatch,
@@ -62,6 +63,11 @@ export type ApprovalInput = {
 export type DispatchInput = {
   turnId: string;
   agentAdapter?: string | undefined;
+};
+
+export type FinalDeliveryInput = {
+  turnId: string;
+  decision: 'accept' | 'repair';
 };
 
 export async function createTurn(input: CreateTurnInput): Promise<TurnResponse> {
@@ -678,6 +684,19 @@ export async function interruptTurn(turnId: string): Promise<DispatchResponse> {
     dispatchError: 'interrupted_by_user',
   }));
   return dispatchResponse(requireTurn(turn));
+}
+
+export async function decideTurnFinalDelivery(input: FinalDeliveryInput): Promise<DispatchResponse> {
+  const turn = await getTurn(input.turnId);
+  if (!turn) throw new ActionError('turn_not_found', 404);
+  if (turn.dispatchStatus !== 'completed') throw new ActionError('delivery_not_ready', 400);
+  const mission = await decideFinalDelivery(turn, input.decision);
+  const updated = await updateTurn(turn.id, (current) => ({
+    ...current,
+    mission: mission ?? current.mission,
+    workflowRun: workflowRunForTurn({ ...current, mission: mission ?? current.mission }),
+  }));
+  return dispatchResponse(requireTurn(updated));
 }
 
 export type TurnResponse = ReturnType<typeof turnResponse>;

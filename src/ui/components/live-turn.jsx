@@ -281,6 +281,7 @@ function LocalLiveTurn({ turn, agents, turnActions, showPreview }) {
                   previewArtifact={showPreview && !interrupted ? previewArtifact : null}
                   agents={agents}
                   mission={turn.result.mission}
+                  onDecideDelivery={turnActions?.delivery ? (decision) => turnActions.delivery(turn.id, decision) : null}
                 />
               ))}
             </div>
@@ -609,11 +610,13 @@ function ExpandableArtifact({ artifact, owner }) {
   );
 }
 
-function LocalResultCard({ artifacts, dispatchStatus, dispatchAdapter, dispatchStage, workspacePath, previewArtifact, agents, mission }) {
+function LocalResultCard({ artifacts, dispatchStatus, dispatchAdapter, dispatchStage, workspacePath, previewArtifact, agents, mission, onDecideDelivery }) {
   const completed = dispatchStatus === 'completed';
   const codeCount = artifacts.filter((artifact) => artifact.kind === 'code').length;
   const reviewCount = artifacts.filter((artifact) => artifact.ownerAgentId === 'reviewer').length;
   const reportReady = mission?.finalDelivery?.status === 'ready';
+  const accepted = mission?.finalDelivery?.status === 'accepted';
+  const rejected = mission?.finalDelivery?.status === 'rejected';
   const statusColor = completed ? 'var(--ok)' : dispatchStatus === 'failed' ? 'var(--bad)' : 'var(--run)';
   return (
     <div style={{ marginTop: 12, border: '1px solid var(--border)', borderRadius: 'var(--r-card)',
@@ -634,6 +637,31 @@ function LocalResultCard({ artifacts, dispatchStatus, dispatchAdapter, dispatchS
           {dispatchStatus || 'not_started'}
         </span>
       </div>
+      {reportReady && onDecideDelivery && (
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '10px 14px',
+          borderBottom: '1px solid var(--border)', background: 'var(--surface-2)', flexWrap: 'wrap' }}>
+          <span style={{ flex: 1, minWidth: 180, fontSize: 12.5, color: 'var(--text-muted)' }}>
+            Final delivery report is ready.
+          </span>
+          <button onClick={() => onDecideDelivery('repair')} style={{ display: 'inline-flex', alignItems: 'center', gap: 6,
+            padding: '7px 11px', borderRadius: 'var(--r-sm)', border: '1px solid var(--border)', background: 'var(--surface)',
+            color: 'var(--text-muted)', cursor: 'pointer', font: 'inherit', fontSize: 12.5, fontWeight: 700 }}>
+            <Icon name="wrench" size={13} /> Request repair
+          </button>
+          <button onClick={() => onDecideDelivery('accept')} style={{ display: 'inline-flex', alignItems: 'center', gap: 6,
+            padding: '7px 11px', borderRadius: 'var(--r-sm)', border: 'none', background: 'var(--ok)',
+            color: '#fff', cursor: 'pointer', font: 'inherit', fontSize: 12.5, fontWeight: 700 }}>
+            <Icon name="check" size={13} /> Accept delivery
+          </button>
+        </div>
+      )}
+      {(accepted || rejected) && (
+        <div style={{ padding: '9px 14px', borderBottom: '1px solid var(--border)',
+          background: alpha(accepted ? 'var(--ok)' : 'var(--warn)', 10), color: accepted ? 'var(--ok)' : 'var(--warn)',
+          fontSize: 12.5, fontWeight: 750 }}>
+          {accepted ? 'Final delivery accepted.' : 'Repair requested for final delivery.'}
+        </div>
+      )}
       {previewArtifact && (
         <div style={{ background: 'var(--surface-3)', padding: 12 }}>
           <div style={{ borderRadius: 'var(--r-sm)', overflow: 'hidden', border: '1px solid var(--border)',
