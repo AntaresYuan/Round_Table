@@ -617,6 +617,8 @@ function LocalResultCard({ artifacts, dispatchStatus, dispatchAdapter, dispatchS
   const reportReady = mission?.finalDelivery?.status === 'ready';
   const accepted = mission?.finalDelivery?.status === 'accepted';
   const rejected = mission?.finalDelivery?.status === 'rejected';
+  const confidence = mission?.finalDelivery?.confidence || 'unknown';
+  const riskCount = mission?.finalDelivery?.risks?.length || 0;
   const statusColor = completed ? 'var(--ok)' : dispatchStatus === 'failed' ? 'var(--bad)' : 'var(--run)';
   return (
     <div style={{ marginTop: 12, border: '1px solid var(--border)', borderRadius: 'var(--r-card)',
@@ -629,7 +631,7 @@ function LocalResultCard({ artifacts, dispatchStatus, dispatchAdapter, dispatchS
             {completed ? 'Result ready' : 'Result in progress'}
           </div>
           <div className="mono" style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 2 }}>
-            {artifacts.length} artifacts · {codeCount} code · {reviewCount} review · final report={reportReady ? mission.finalDelivery.recommendation : 'not_ready'} · adapter={dispatchAdapter || 'local-dispatch'} · next={dispatchStage || 'done'}
+            {artifacts.length} artifacts · {codeCount} code · {reviewCount} review · confidence={confidence} · tests={mission?.finalDelivery?.testsObserved ? 'observed' : 'missing'} · risks={riskCount} · final report={reportReady ? mission.finalDelivery.recommendation : 'not_ready'} · adapter={dispatchAdapter || 'local-dispatch'} · next={dispatchStage || 'done'}
           </div>
         </div>
         <span style={{ fontSize: 11.5, color: statusColor, padding: '3px 8px', borderRadius: 999,

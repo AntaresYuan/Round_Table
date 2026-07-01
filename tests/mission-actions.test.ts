@@ -78,6 +78,8 @@ describe('Mission P0 migration', () => {
     expect(result.mission?.status).toBe('completed');
     expect(result.mission?.finalDelivery.status).toBe('ready');
     expect(result.mission?.finalDelivery.reportArtifactId).toBe(`final_report_${turn.id}`);
+    expect(result.mission?.finalDelivery.confidence).toBe('pass');
+    expect(result.mission?.finalDelivery.testsObserved).toBe(true);
     expect(result.artifacts.find((artifact) => artifact.id === `final_report_${turn.id}`)?.preview)
       .toContain('Final Delivery Report');
     expect(result.workflowRun?.stageStates.plan?.status).toBe('done');

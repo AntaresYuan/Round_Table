@@ -317,6 +317,9 @@ export type MissionFinalDelivery = {
   status: 'not_ready' | 'ready' | 'accepted' | 'rejected';
   reportArtifactId: string | null;
   recommendation: 'accept' | 'repair' | 'review';
+  confidence: 'pass' | 'warning' | 'blocked' | 'unknown';
+  testsObserved: boolean;
+  risks: string[];
 };
 
 export type Mission = {

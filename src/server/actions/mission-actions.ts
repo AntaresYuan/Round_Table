@@ -767,15 +767,35 @@ function finalDeliveryForTurn(turn: LocalTurn): MissionFinalDelivery {
   if (turn.dispatchStatus !== 'completed') return initialFinalDelivery();
   const reportArtifact = turn.artifacts.find((artifact) => artifact.id === `final_report_${turn.id}`);
   const reviewArtifact = turn.artifacts.find((artifact) => artifact.ownerAgentId === 'vera' || artifact.ownerAgentId === 'reviewer');
+  const reportText = reportArtifact?.preview ?? '';
+  const confidence = /Reviewer confidence:\s*blocked/i.test(reportText)
+    ? 'blocked'
+    : /Reviewer confidence:\s*pass/i.test(reportText)
+      ? 'pass'
+      : /Reviewer confidence:\s*warning/i.test(reportText)
+        ? 'warning'
+        : reviewArtifact
+          ? 'pass'
+          : 'unknown';
+  const testsObserved = /Test or verification evidence was mentioned/i.test(reportText);
+  const risks = reportText.includes('No blocking task failures recorded.')
+    ? []
+    : reportText
+        .split('\n')
+        .filter((line) => line.startsWith('- ') && /failed|blocked|error/i.test(line))
+        .map((line) => line.slice(2));
   return {
     status: 'ready',
     reportArtifactId: reportArtifact?.id ?? reviewArtifact?.id ?? turn.artifacts.at(-1)?.id ?? null,
     recommendation: 'accept',
+    confidence,
+    testsObserved,
+    risks,
   };
 }
 
 function initialFinalDelivery(): MissionFinalDelivery {
-  return { status: 'not_ready', reportArtifactId: null, recommendation: 'review' };
+  return { status: 'not_ready', reportArtifactId: null, recommendation: 'review', confidence: 'unknown', testsObserved: false, risks: [] };
 }
 
 function missionStatusFromTurn(turn: LocalTurn, stages: MissionStage[]): MissionStatus {
