@@ -20,6 +20,38 @@ import { trpc } from '../lib/trpc';
 
 const { useState, useEffect } = React;
 
+function missionDependencyGraph(turns, artifacts) {
+  const turn = turns?.[0];
+  const mission = turn?.result?.mission;
+  if (!mission) return null;
+  const byId = new Map((artifacts || []).map((artifact) => [artifact.id, artifact]));
+  const nodes = (mission.tasks || [])
+    .flatMap((task) => task.artifactIds || [])
+    .filter((id, index, all) => all.indexOf(id) === index)
+    .map((artifactId) => {
+      const artifact = byId.get(artifactId);
+      return {
+        artifactId,
+        title: artifact?.title || artifactId,
+        ownerAgentId: artifact?.ownerAgentId || 'orchestrator',
+        version: artifact?.version || 1,
+      };
+    });
+  const taskById = new Map((mission.tasks || []).map((task) => [task.id, task]));
+  const edges = [];
+  for (const task of mission.tasks || []) {
+    for (const depId of task.deps || []) {
+      const dep = taskById.get(depId);
+      for (const from of dep?.artifactIds || []) {
+        for (const to of task.artifactIds || []) {
+          edges.push({ from, to, kind: 'references' });
+        }
+      }
+    }
+  }
+  return { nodes, edges, staleNodeIds: [] };
+}
+
 function Drawer({ art, agents, onClose }) {
   if (!art) return null;
   const displayArt = normalizeArtifactForDisplay(art);
@@ -199,6 +231,7 @@ function InspectorPanel({ tab, setTab, clock, agents, scene, width, onOpenArtifa
     : live
     ? (liveArtifacts ?? []).map((a) => ({ ...a, version: a.currentVersion, source: a.source ?? 'generated' }))
     : placed.map((p) => p.art);
+  const liveGraph = hasLocalTurns ? missionDependencyGraph(localTurns, created) : null;
   // The fixture "brief" is demo-only — in live mode there are no user-provided artifacts yet.
   const provided = live || hasLocalTurns ? [] : [RT.ARTIFACTS.brief];
   const notes = meetingNotes(clock);
@@ -249,9 +282,19 @@ function InspectorPanel({ tab, setTab, clock, agents, scene, width, onOpenArtifa
         <MemoryPanel memory={memory} />
       ) : tab === 'deps' ? (
         <div style={{ flex: 1, overflowY: 'auto', padding: '14px 14px 24px' }}>
-          {live || hasLocalTurns ? (
+          {hasLocalTurns ? (
+            <DependencyGraphSidebar
+              graph={liveGraph}
+              agents={agents}
+              chatId={localTurns?.[0]?.id || 'local'}
+              onNodeClick={(node) => {
+                const art = created.find((artifact) => artifact.id === node.artifactId);
+                if (art && onOpenArtifact) onOpenArtifact(art);
+              }}
+            />
+          ) : live ? (
             <div style={{ fontSize: 12.5, color: 'var(--text-faint)', fontStyle: 'italic', padding: '4px 2px' }}>
-              The dependency graph isn&rsquo;t wired to live data yet — it&rsquo;ll map artifacts as the team links them.</div>
+              The dependency graph isn&rsquo;t wired to live server data yet — local Mission runs show live task/artifact links here.</div>
           ) : (
             <DependencyGraphSidebar
               graph={RT.DEPENDENCY_GRAPH}
