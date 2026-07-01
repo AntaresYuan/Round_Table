@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { listMissions, listWorkflowTemplates } from '../src/server/actions/mission-actions.js';
-import { approveTurn, createTurn } from '../src/server/actions/turn-actions.js';
+import { approveTurn, createTurn, decideTurnFinalDelivery } from '../src/server/actions/turn-actions.js';
 import { resetData } from '../src/server/store.js';
 import type { Actor } from '../src/server/types.js';
 
@@ -84,5 +84,10 @@ describe('Mission P0 migration', () => {
     expect(result.workflowRun?.stageStates.review?.status).toBe('done');
     expect(result.workflowRun?.stageStates.ship?.status).toBe('active');
     expect(result.mission?.artifactIds.length).toBeGreaterThan(0);
+
+    const accepted = await decideTurnFinalDelivery({ turnId: turn.id, decision: 'accept' });
+    expect(accepted.mission?.finalDelivery.status).toBe('accepted');
+    expect(accepted.mission?.checkpoints.find((checkpoint) => checkpoint.kind === 'final_delivery_acceptance')?.status)
+      .toBe('satisfied');
   });
 });

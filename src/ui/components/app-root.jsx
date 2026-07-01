@@ -871,6 +871,24 @@ function App() {
       turn.id === turnId ? { ...turn, discarded: true } : turn
     )));
   };
+  const decideLocalDelivery = async (turnId, decision) => {
+    try {
+      const res = await fetch('/api/orchestrator/delivery', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ turnId, decision }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || 'delivery_decision_failed');
+      setLocalTurns((turns) => turns.map((turn) => (
+        turn.id === turnId
+          ? { ...turn, result: { ...turn.result, mission: data.mission, workflowRun: data.workflowRun } }
+          : turn
+      )));
+    } catch {
+      loadLocalHistory();
+    }
+  };
   const createLocalTask = (goal, workflowTemplateId) => {
     setModal(null);
     setView('roundtable');
@@ -1014,7 +1032,7 @@ function App() {
                   agents={agents} scene={scene} live={authed && !!activeChatId} liveArtifacts={liveArtifacts} liveMessages={liveMessages}
                   liveHandoffs={liveHandoffs} activeChatId={activeChatId} memory={memory}
                   localTurns={activeLocalTurns.length ? activeLocalTurns : localTurns} localStatus={localStatus} onApproveLocalTurn={approveLocalTurn}
-                  localTurnActions={{ interrupt: interruptLocalTurn, redispatch: redispatchLocalTurn, discard: discardLocalTurn, clarify: answerLocalClarification, approve: approveLocalTurn }}
+                  localTurnActions={{ interrupt: interruptLocalTurn, redispatch: redispatchLocalTurn, discard: discardLocalTurn, clarify: answerLocalClarification, approve: approveLocalTurn, delivery: decideLocalDelivery }}
                   onOpenArtifact={setDrawerArt} onAction={onAction} onClose={() => setNotesOpen(false)}
                   onRewrite={sendComposerMessage} />}
               </div>
