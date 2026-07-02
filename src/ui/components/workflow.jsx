@@ -323,6 +323,7 @@ function WorkflowView({ agents, onOpenTemplates }) {
             </p>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
+            <a href="/agents" style={{ ...ghostBtn, textDecoration: 'none' }}><Icon name="code" size={14} /> Agent CLIs</a>
             <button onClick={onOpenTemplates} style={ghostBtn}><Icon name="layers" size={14} /> Start from template</button>
             <button onClick={saveWorkflow} style={{ ...ghostBtn, background: saved ? 'var(--ok)' : 'var(--accent)', color: '#fff', border: 'none', fontWeight: 500 }}>
               <Icon name="check" size={14} /> {saved ? 'Saved to gallery' : 'Save as template'}</button>

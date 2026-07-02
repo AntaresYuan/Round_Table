@@ -307,7 +307,7 @@ function BreakoutsHub({ agents, memberIds, autoRoom, onEnterAuto, onStartDM, onC
    latest run, so DMRoom's "Work" tab shows what they actually did (not a mock).
    Owner match is by agentId on both the plan task and the artifact. -------- */
 function agentWorkFor(agentId, turnResult) {
-  if (!agentId || !turnResult) return { tasks: [], artifacts: [] };
+  if (!agentId || !turnResult) return { tasks: [], artifacts: [], adapter: null };
   const tasks = (turnResult.plan?.tasks || []).filter((task) => task.owner === agentId);
   const ownedTaskIds = new Set(tasks.map((task) => task.id));
   const records = new Map((turnResult.dispatch || []).map((rec) => [rec.taskId, rec]));
@@ -318,6 +318,7 @@ function agentWorkFor(agentId, turnResult) {
   return {
     tasks: tasks.map((task) => ({ ...task, status: records.get(task.id)?.status || 'pending' })),
     artifacts,
+    adapter: turnResult.dispatchAdapter || null,
   };
 }
 
@@ -332,7 +333,7 @@ const DM_WORK_STATUS = {
 // The "Work" tab: this agent's task(s) and the deliverables they produced, each
 // expandable to read the real content (HTML renders in an iframe, text as md).
 function DMWorkPanel({ agent, work }) {
-  const { tasks, artifacts } = work;
+  const { tasks, artifacts, adapter } = work;
   if (tasks.length === 0 && artifacts.length === 0) {
     return (
       <div style={{ fontSize: 12.5, color: 'var(--text-faint)', fontStyle: 'italic', padding: '4px 2px' }}>
@@ -352,6 +353,10 @@ function DMWorkPanel({ agent, work }) {
                 <span style={{ marginTop: 2, width: 8, height: 8, borderRadius: '50%', background: st.color, flexShrink: 0 }} />
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text)' }}>{task.title}</div>
+                  <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginTop: 5 }}>
+                    {adapter && <MetaChip label={`via ${adapter}`} />}
+                    {(task.deps || []).map((dep) => <MetaChip key={dep} label={`input ${dep}`} />)}
+                  </div>
                   {task.brief && <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 2 }}>{task.brief}</div>}
                 </div>
                 <span style={{ fontSize: 10.5, fontWeight: 700, color: st.color }}>{st.label}</span>
@@ -368,6 +373,13 @@ function DMWorkPanel({ agent, work }) {
         </div>
       )}
     </div>
+  );
+}
+
+function MetaChip({ label }) {
+  return (
+    <span className="mono" style={{ fontSize: 10, color: 'var(--text-faint)', padding: '1px 5px',
+      borderRadius: 5, border: '1px solid var(--border)', background: 'var(--surface-2)' }}>{label}</span>
   );
 }
 
