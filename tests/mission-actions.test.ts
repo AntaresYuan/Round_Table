@@ -126,9 +126,16 @@ describe('Mission P0 migration', () => {
     expect(testsRequestedAgain.mission?.tasks.filter((task) => task.id === `test_final_${turn.id}`)).toHaveLength(1);
 
     const repairRequested = await decideTurnFinalDelivery({ turnId: turn.id, decision: 'repair' });
-    expect(repairRequested.mission?.currentStageId).toBe('repair');
-    expect(repairRequested.mission?.tasks.some((task) => task.id === `repair_final_${turn.id}` && task.status === 'pending'))
+    expect(repairRequested.mission?.currentStageId).toBe('ship');
+    expect(repairRequested.workflowRun?.stageStates.repair?.status).toBe('done');
+    expect(repairRequested.mission?.tasks.some((task) => task.id === `repair_final_${turn.id}` && task.status === 'completed'))
       .toBe(true);
+    expect(repairRequested.records.some((record) => record.taskId === `repair_final_${turn.id}` && record.status === 'completed'))
+      .toBe(true);
+    expect(repairRequested.artifacts.some((artifact) => artifact.id === `repair_final_${turn.id}_${turn.id}`))
+      .toBe(true);
+    expect(repairRequested.mission?.finalDelivery.status).toBe('ready');
+    expect(repairRequested.mission?.finalDelivery.confidence).not.toBe('blocked');
     const repairRequestedAgain = await decideTurnFinalDelivery({ turnId: turn.id, decision: 'repair' });
     expect(repairRequestedAgain.mission?.tasks.filter((task) => task.id === `repair_final_${turn.id}`)).toHaveLength(1);
 
@@ -136,5 +143,28 @@ describe('Mission P0 migration', () => {
     expect(accepted.mission?.finalDelivery.status).toBe('accepted');
     expect(accepted.mission?.checkpoints.find((checkpoint) => checkpoint.kind === 'final_delivery_acceptance')?.status)
       .toBe('satisfied');
+  });
+
+  it('produces a concrete checkout delivery artifact for checkout flow requests', async () => {
+    const turn = await createTurn({
+      actor,
+      chatId: 'checkout-chat',
+      message: 'Implement a checkout flow with cart summary, payment handoff, validation, and post-payment confirmation.',
+    });
+
+    const result = await approveTurn({
+      turnId: turn.id,
+      decision: 'approve',
+      autoDispatch: true,
+      agentAdapter: 'local-dispatch',
+    });
+
+    const delivery = result.artifacts.find((artifact) => artifact.kind === 'preview');
+    expect(result.records.some((record) => record.agentId === 'fixer')).toBe(false);
+    expect(result.workflowRun?.stageStates.repair?.status).toBe('pending');
+    expect(delivery?.preview).toContain('Cart summary');
+    expect(delivery?.preview).toContain('Payment handoff');
+    expect(delivery?.preview).toContain('Post-payment confirmation');
+    expect(delivery?.preview).toContain('ZIP must be 5 digits');
   });
 });

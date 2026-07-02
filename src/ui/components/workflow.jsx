@@ -408,6 +408,7 @@ function liveStageFlags(workflow, workflowRun) {
     return {
       done: status === 'done' || status === 'completed',
       active: !s.fixed && (workflowRun.activeStageId === s.id || status === 'active' || status === 'running'),
+      visible: s.kind !== 'repair' || status !== 'pending',
     };
   });
 }
@@ -415,7 +416,9 @@ function liveStageFlags(workflow, workflowRun) {
 function WorkflowStrip({ clock, onOpen, workflow, workflowRun }) {
   const live = liveStageFlags(workflow, workflowRun);
   const wf = live ? workflow : activeWorkflow();
-  const stages = wf.stages;
+  const stages = wf.stages
+    .map((stage, index) => ({ stage, index }))
+    .filter(({ stage, index }) => !live || live[index]?.visible || stage.kind !== 'repair');
   const cur = currentStageIndex(clock);
   return (
     <div className="rt-workflow-strip" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, minWidth: 0, maxWidth: '100%',
@@ -425,9 +428,9 @@ function WorkflowStrip({ clock, onOpen, workflow, workflowRun }) {
       <span className="mono" style={{ fontSize: 9, letterSpacing: '.12em', textTransform: 'uppercase', color: 'var(--text-faint)', flexShrink: 0 }}>Workflow</span>
       <span style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--text)', whiteSpace: 'nowrap', flexShrink: 0, marginRight: 4,
         maxWidth: 170, overflow: 'hidden', textOverflow: 'ellipsis' }} title={wf.name}>{wf.name}</span>
-      {stages.map((s, i) => {
-        const done = live ? live[i].done : i < cur;
-        const active = live ? live[i].active : i === cur;
+      {stages.map(({ stage: s, index }, i) => {
+        const done = live ? live[index].done : index < cur;
+        const active = live ? live[index].active : index === cur;
         return (
           <React.Fragment key={s.id}>
             {i > 0 && <span className="rt-workflow-connector" style={{ width: 12, height: 1.5, flexShrink: 0,
