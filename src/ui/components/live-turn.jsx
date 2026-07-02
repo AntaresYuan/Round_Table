@@ -185,7 +185,7 @@ function LocalLiveTurn({ turn, agents, turnActions, showPreview }) {
   const stopping = turn.result?.dispatchStage === 'interrupting' || turn.interrupting;
   const interrupted = failed && turn.result?.dispatchError === 'interrupted_by_user';
   const artifacts = turn.result?.artifacts || [];
-  const previewArtifact = artifacts.find((artifact) => artifact.kind === 'preview');
+  const previewArtifact = previewArtifactFor(artifacts, agents);
   // The plan has been drafted but no agent has run yet — show the reviewable plan
   // with a Start button instead of the (empty) run details.
   const awaitingApproval = !!turn.result
@@ -291,6 +291,44 @@ function LocalLiveTurn({ turn, agents, turnActions, showPreview }) {
       </div>
     </>
   );
+}
+
+function previewArtifactFor(artifacts, agents) {
+  const explicit = (artifacts || []).find((artifact) => artifact.kind === 'preview' && artifact.preview);
+  if (explicit) return explicit;
+  const candidates = (artifacts || [])
+    .map((artifact, index) => {
+      const owner = agentForArtifact(artifact, agents);
+      const html = extractHtmlDocument(`${artifact.preview || ''}\n${artifact.code || ''}`);
+      let score = 0;
+      if (owner?.role === 'implementer') score += 40;
+      if (owner?.role === 'fixer') score += 30;
+      if (/\/work\//i.test(artifact.title || '')) score += 20;
+      if (/\/fixes\//i.test(artifact.title || '')) score += 10;
+      return { artifact, html, score, index };
+    })
+    .filter((candidate) => candidate.html);
+  candidates.sort((a, b) => b.score - a.score || a.index - b.index);
+  const best = candidates[0];
+  if (!best) return null;
+  return {
+    ...best.artifact,
+    kind: 'preview',
+    title: `Preview · ${best.artifact.title}`,
+    preview: best.html,
+  };
+}
+
+function extractHtmlDocument(raw) {
+  const start = raw.search(/<!doctype\s+html[^>]*>|<html[\s>]/i);
+  if (start < 0) return null;
+  const fromStart = raw.slice(start);
+  if (!/<body[\s>]/i.test(fromStart)) return null;
+  const end = fromStart.search(/<\/html>/i);
+  const document = end >= 0
+    ? fromStart.slice(0, end + fromStart.match(/<\/html>/i)[0].length)
+    : fromStart.replace(/`+\s*$/, '');
+  return document.trim() || null;
 }
 
 

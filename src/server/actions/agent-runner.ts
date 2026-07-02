@@ -440,7 +440,7 @@ function pathForTask(task: PlanTask): string {
 
 // Does this build target a renderable web page? Covers EN + 中文 vocabulary.
 function wantsWebPage(text: string): boolean {
-  return /\b(website|web\s?page|webpage|landing|page|site|html|frontend|ui|dashboard|portfolio|checkout|payment|cart)\b|网站|网页|页面|前端|官网|落地页|主页|仪表盘|看板|结账|支付|购物车/i.test(text);
+  return /\b(website|web\s?page|webpage|landing|page|site|html|frontend|ui|dashboard|portfolio|checkout|payment|cart|app|tool|prototype)\b|网站|网页|页面|前端|官网|落地页|主页|仪表盘|看板|结账|支付|购物车|应用|工具|原型/i.test(text);
 }
 
 function kindForPath(path: string): ArtifactKind {

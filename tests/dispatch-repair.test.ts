@@ -191,6 +191,15 @@ describe('runAgentTask — chat model deliverable extraction', () => {
     brief: 'Build the hotpot website. User request: 做一个火锅店网站',
   });
 
+  const toolTask = () => task({
+    id: 'task_tool_atlas',
+    role: 'implementer',
+    owner: 'atlas',
+    assignee: '@atlas',
+    title: 'Build Fuji organizer tool (Atlas)',
+    brief: '做一个富士专用的镜头与相机整理工具',
+  });
+
   it('recovers a fenced, truncated HTML response into a clean document', async () => {
     // Fence + cut after body content started: renderable, so keep it clean.
     stubModelResponse('```html\n<!DOCTYPE html>\n<html><head></head><body><h1>真鲜</h1><p>每一天，从产地到');
@@ -255,6 +264,20 @@ describe('runAgentTask — chat model deliverable extraction', () => {
     });
     expect(result.ok).toBe(false);
     expect(result.error).toBe('deliverable_not_usable');
+  });
+
+  it('treats organizer tools as previewable app deliverables', async () => {
+    stubModelResponse('<!DOCTYPE html>\n<html><head></head><body><h1>Fuji Gear</h1></body></html>');
+    const result = await runAgentTask({
+      adapter: 'openai-compat',
+      workspace: tempDir,
+      task: toolTask(),
+      message: '做一个富士专用的镜头与相机整理工具',
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.kind).toBe('preview');
+    expect(result.path.endsWith('.html')).toBe(true);
   });
 });
 
