@@ -738,7 +738,7 @@ function App() {
       setLocalStatus('error');
     }
   };
-  const appendLocalMessage = (message, turnId = activeLocalTurn?.id) => {
+  const appendLocalMessage = async (message, turnId = activeLocalTurn?.id) => {
     if (!turnId) {
       sendLocalTurn(message);
       return;
@@ -747,19 +747,61 @@ function App() {
       id: `follow-${Date.now()}`,
       content: message,
       createdAt: new Date().toISOString(),
+      status: 'editing',
+    };
+    const upsertFollowUp = (updater) => {
+      setLocalFollowUps((current) => ({
+        ...current,
+        [turnId]: updater(current[turnId] || []),
+      }));
+      setLocalTurns((turns) => turns.map((turn) => (
+        turn.id === turnId
+          ? { ...turn, followUps: updater(turn.followUps || []) }
+          : turn
+      )));
     };
     setInspectorTab('chat');
     setNotesOpen(true);
     setSelectedLocalTurnId(turnId);
-    setLocalFollowUps((current) => ({
-      ...current,
-      [turnId]: [...(current[turnId] || []), note],
-    }));
-    setLocalTurns((turns) => turns.map((turn) => (
-      turn.id === turnId
-        ? { ...turn, followUps: [...(turn.followUps || []), note] }
-        : turn
-    )));
+    upsertFollowUp((items) => [...items, note]);
+    try {
+      const res = await fetch('/api/orchestrator/edit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ turnId, instruction: message }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || 'edit_failed');
+      upsertFollowUp((items) => items.map((item) =>
+        item.id === note.id ? { ...item, status: 'applied' } : item
+      ));
+      setLocalTurns((turns) => turns.map((turn) => (
+        turn.id === turnId
+          ? {
+              ...turn,
+              result: {
+                ...turn.result,
+                dispatchStatus: data.dispatchStatus,
+                dispatchAdapter: data.dispatchAdapter,
+                dispatchedAt: data.dispatchedAt,
+                dispatchStage: data.dispatchStage,
+                dispatchError: data.dispatchError,
+                dispatchWorkspacePath: data.workspacePath,
+                dispatch: data.records,
+                artifacts: data.artifacts,
+                mission: data.mission,
+                workflowRun: data.workflowRun,
+              },
+            }
+          : turn
+      )));
+      setLocalStatus('idle');
+    } catch (error) {
+      const messageText = error instanceof Error ? error.message : 'edit_failed';
+      upsertFollowUp((items) => items.map((item) =>
+        item.id === note.id ? { ...item, status: 'error', error: messageText } : item
+      ));
+    }
   };
   // The planner parked this turn with clarifying questions; send the user's
   // picks to get a real plan. We DON'T auto-dispatch — the plan now waits for

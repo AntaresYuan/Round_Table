@@ -70,6 +70,11 @@ export type FinalDeliveryInput = {
   decision: 'accept' | 'repair' | 'tests';
 };
 
+export type FollowUpEditInput = {
+  turnId: string;
+  instruction: string;
+};
+
 export async function createTurn(input: CreateTurnInput): Promise<TurnResponse> {
   const message = input.message.trim();
   if (!message) throw new ActionError('missing_message', 400);
@@ -722,6 +727,68 @@ export async function decideTurnFinalDelivery(input: FinalDeliveryInput): Promis
   return dispatchResponse(requireTurn(updated));
 }
 
+export async function editTurnDelivery(input: FollowUpEditInput): Promise<DispatchResponse> {
+  const instruction = input.instruction.trim();
+  if (!instruction) throw new ActionError('missing_message', 400);
+  const turn = await getTurn(input.turnId);
+  if (!turn) throw new ActionError('turn_not_found', 404);
+  if (turn.dispatchStatus !== 'completed') throw new ActionError('delivery_not_ready', 400);
+  const target = turn.artifacts.find((artifact) => artifact.kind === 'preview' && artifact.preview)
+    ?? turn.artifacts.find((artifact) => artifact.kind === 'html' && artifact.preview)
+    ?? turn.artifacts.find((artifact) => artifact.kind === 'code' && artifact.preview);
+  if (!target?.preview) throw new ActionError('artifact_not_ready', 400);
+  const now = nowIso();
+  const edited = editArtifactPreview(target.preview, instruction);
+  const artifact: Artifact = {
+    ...target,
+    version: (target.version || 1) + 1,
+    preview: edited,
+    code: target.kind === 'code' ? edited : target.code,
+    createdAt: now,
+  };
+  const editRecord: DispatchRecord = {
+    taskId: `edit_${turn.id}_${Date.now()}`,
+    agentId: 'atlas',
+    status: 'completed',
+    events: [
+      { type: 'thinking_delta', delta: `Applying follow-up edit: ${instruction}` },
+      { type: 'tool_use', id: `tool_edit_${turn.id}`, name: 'edit_artifact', input: { artifactId: artifact.id, title: artifact.title } },
+      { type: 'tool_result', id: `tool_edit_${turn.id}`, output: { artifactId: artifact.id, version: artifact.version } },
+      { type: 'file_change', path: artifact.title, kind: 'edit', diff: instruction },
+      { type: 'done', finishReason: 'completed' },
+    ],
+    startedAt: now,
+    finishedAt: now,
+    error: null,
+  };
+  const workspace = turn.dispatchWorkspacePath ?? await prepareWorkspace(turn);
+  await writeWorkspaceFile(workspace, artifact.title, artifact.preview ?? '');
+  const updated = await updateTurn(turn.id, (current) => {
+    const artifacts = current.artifacts.map((item) => item.id === artifact.id ? artifact : item);
+    const records = [...current.dispatch, editRecord];
+    return {
+      ...current,
+      dispatch: records,
+      artifacts,
+      dispatchStage: 'edited',
+      dispatchWorkspacePath: workspace,
+    };
+  });
+  const editedTurn = requireTurn(updated);
+  const mission = await updateMissionForDispatch(editedTurn);
+  const finalTurn = requireTurn(await updateTurn(editedTurn.id, (current) => ({
+    ...current,
+    mission: mission ?? current.mission,
+    workflowRun: workflowRunForTurn({ ...current, mission: mission ?? current.mission }),
+  })));
+  if (finalTurn.localChatId) {
+    await mutateData((data) => {
+      upsertArtifacts(data.artifacts, finalTurn.artifacts);
+    });
+  }
+  return dispatchResponse(finalTurn);
+}
+
 async function executeFinalDeliveryRepair(turn: LocalTurn): Promise<DispatchResponse> {
   const repairTaskId = `repair_final_${turn.id}`;
   const repairArtifactId = `${repairTaskId}_${turn.id}`;
@@ -1263,6 +1330,47 @@ async function writeWorkspaceFile(workspace: string, relativePath: string, text:
   const target = join(workspace, relativePath);
   await mkdir(dirname(target), { recursive: true });
   await writeFile(target, text, 'utf8');
+}
+
+function editArtifactPreview(source: string, instruction: string): string {
+  if (/\b(color|colour|palette)\b|颜色|配色|换色|改色/i.test(instruction)) {
+    return applyPalette(source, instruction);
+  }
+  return injectEditBanner(source, instruction);
+}
+
+function applyPalette(source: string, instruction: string): string {
+  const palettes = [
+    { name: 'teal', accent: '#0f766e', bg: '#f0fdfa', line: '#99f6e4', ink: '#102a2a', muted: '#4f6f6b' },
+    { name: 'indigo', accent: '#4f46e5', bg: '#eef2ff', line: '#c7d2fe', ink: '#171536', muted: '#626586' },
+    { name: 'rose', accent: '#e11d48', bg: '#fff1f2', line: '#fecdd3', ink: '#3a1420', muted: '#7f5b66' },
+    { name: 'emerald', accent: '#059669', bg: '#ecfdf5', line: '#a7f3d0', ink: '#10251d', muted: '#527062' },
+  ] as const;
+  const lower = instruction.toLowerCase();
+  const fallback = palettes[0];
+  const chosen = palettes.find((palette) => lower.includes(palette.name))
+    ?? (/绿|绿色/.test(instruction) ? palettes[3]
+      : /红|粉|玫瑰/.test(instruction) ? palettes[2]
+      : /蓝|紫|靛/.test(instruction) ? palettes[1]
+      : fallback);
+  let next = source
+    .replace(/--accent:\s*#[0-9a-fA-F]{3,8}/g, `--accent:${chosen.accent}`)
+    .replace(/--bg:\s*#[0-9a-fA-F]{3,8}/g, `--bg:${chosen.bg}`)
+    .replace(/--line:\s*#[0-9a-fA-F]{3,8}/g, `--line:${chosen.line}`)
+    .replace(/--ink:\s*#[0-9a-fA-F]{3,8}/g, `--ink:${chosen.ink}`)
+    .replace(/--muted:\s*#[0-9a-fA-F]{3,8}/g, `--muted:${chosen.muted}`);
+  if (next === source) {
+    next = source.replace('</style>', `:root{--accent:${chosen.accent};--bg:${chosen.bg};--line:${chosen.line};--ink:${chosen.ink};--muted:${chosen.muted}}\n</style>`);
+  }
+  return next.includes('data-roundtable-edit=')
+    ? next
+    : next.replace('<body>', `<body data-roundtable-edit="palette-${chosen.name}">`);
+}
+
+function injectEditBanner(source: string, instruction: string): string {
+  const safe = instruction.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  if (!/<body[^>]*>/i.test(source)) return `${source}\n\n<!-- Follow-up edit: ${safe} -->`;
+  return source.replace(/<body([^>]*)>/i, `<body$1><div style="position:fixed;right:18px;bottom:18px;z-index:9999;padding:10px 13px;border-radius:10px;background:#111827;color:white;font:13px system-ui">Follow-up edit: ${safe}</div>`);
 }
 
 // Wipe this system's own output tree (.roundtable/runs) before a run so a
