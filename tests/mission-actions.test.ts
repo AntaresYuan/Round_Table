@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { getMission, getMissionByTurn, listMissions, listWorkflowTemplates } from '../src/server/actions/mission-actions.js';
-import { approveTurn, createTurn, decideTurnFinalDelivery } from '../src/server/actions/turn-actions.js';
+import { approveTurn, createTurn, decideTurnFinalDelivery, editTurnDelivery } from '../src/server/actions/turn-actions.js';
 import { resetData } from '../src/server/store.js';
 import type { Actor } from '../src/server/types.js';
 
@@ -155,5 +155,28 @@ describe('Mission P0 migration', () => {
     expect(delivery?.preview).toContain('Payment handoff');
     expect(delivery?.preview).toContain('Post-payment confirmation');
     expect(delivery?.preview).toContain('ZIP must be 5 digits');
+  });
+
+  it('applies follow-up color edits to the current delivery artifact', async () => {
+    const turn = await createTurn({
+      actor,
+      chatId: 'checkout-edit-chat',
+      message: 'Implement a checkout flow with cart summary, payment handoff, validation, and post-payment confirmation.',
+    });
+    const result = await approveTurn({
+      turnId: turn.id,
+      decision: 'approve',
+      autoDispatch: true,
+      agentAdapter: 'local-dispatch',
+    });
+    const before = result.artifacts.find((artifact) => artifact.kind === 'preview');
+
+    const edited = await editTurnDelivery({ turnId: turn.id, instruction: '不错，换个颜色' });
+    const after = edited.artifacts.find((artifact) => artifact.id === before?.id);
+
+    expect(after?.version).toBe((before?.version ?? 0) + 1);
+    expect(after?.preview).toContain('--accent:#0f766e');
+    expect(after?.preview).toContain('data-roundtable-edit="palette-teal"');
+    expect(edited.records.some((record) => record.taskId.startsWith(`edit_${turn.id}`))).toBe(true);
   });
 });

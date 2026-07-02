@@ -28,6 +28,9 @@ function knownClientError(message: string): boolean {
     'mission_not_found',
     'handoff_not_found',
     'handoff_not_rejectable',
+    'turn_not_found',
+    'delivery_not_ready',
+    'artifact_not_ready',
     'unauthorized',
   ].includes(message);
 }

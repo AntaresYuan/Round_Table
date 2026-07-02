@@ -203,6 +203,12 @@ function LocalLiveTurn({ turn, agents, turnActions, showPreview }) {
     && !turn.result.needsClarification
     && turn.result.approvalStatus !== 'approved'
     && turn.result.dispatchStatus === 'not_started';
+  const followUpStatusText = (message) => {
+    if (message.status === 'editing') return 'Editing the current delivery artifact...';
+    if (message.status === 'applied') return 'Applied to the current delivery artifact.';
+    if (message.status === 'error') return `Could not apply edit: ${message.error || 'edit failed'}`;
+    return 'Added to this Mission thread.';
+  };
   return (
     <>
       <UserMsg text={turn.message} />
@@ -303,7 +309,7 @@ function LocalLiveTurn({ turn, agents, turnActions, showPreview }) {
       {(turn.followUps || []).map((message) => (
         <React.Fragment key={message.id}>
           <UserMsg text={message.content} />
-          <AssistantNote text="Added to this Mission thread. Start a new Mission from the sidebar when you want a separate run." />
+          <AssistantNote text={followUpStatusText(message)} />
         </React.Fragment>
       ))}
     </>
