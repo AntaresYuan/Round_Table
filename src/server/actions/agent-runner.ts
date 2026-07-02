@@ -265,7 +265,7 @@ function e2bAgentEnv(): Record<string, string> {
 // transport call and display metadata differ per provider.
 type ChatModelRun = (input: {
   messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>;
-  timeoutMs: number;
+  timeoutMs?: number | undefined;
   maxTokens?: number | undefined;
 }) => Promise<{ text: string; usage?: Record<string, unknown> | undefined; finishReason?: string | undefined }>;
 
@@ -283,8 +283,8 @@ async function runChatModelTask(
   const toolId = `tool_${input.task.id}`;
   const system = chatAgentPrompt(agent, input);
   const user = input.handoffContext
-    ? `Task: ${input.task.title}\n\nUpstream deliverable to build on / review:\n\n${input.handoffContext}\n\nProduce your deliverable now.`
-    : `Task: ${input.task.title}\n\nProduce your deliverable now.`;
+    ? `Task: ${input.task.title}\n\nContext from earlier agents:\n\n${input.handoffContext}\n\nCreate the next useful output for your role.`
+    : `Task: ${input.task.title}\n\nCreate the next useful output for your role.`;
   const started: AgentEvent[] = [
     { type: 'thinking_delta', delta: `${agent.displayName} querying ${provider.model}.` },
     { type: 'tool_use', id: toolId, name: provider.toolName, input: { agentId: agent.id, role: agent.role, path } },
@@ -652,24 +652,21 @@ function chatAgentPrompt(
 ): string {
   const isHtml = pathForTask(input.task).endsWith('.html');
   const roleInstruction = {
-    planner: 'Break the goal into a short, ordered task list with clear ownership. Output the plan as Markdown.',
-    pm: 'State the product intent, constraints, and acceptance criteria as Markdown.',
-    architect: 'Describe the technical approach, key interfaces, and risks as Markdown.',
+    planner: 'Map the goal into a practical next-step plan. Keep it useful and concise.',
+    pm: 'Clarify product intent, constraints, acceptance criteria, and sequencing.',
+    architect: 'Describe a workable technical approach, key interfaces, risks, and tradeoffs.',
     implementer: isHtml
-      ? 'Output a COMPLETE, self-contained HTML document (with inline CSS/JS) that fulfills the task. '
-        + 'Keep the CSS lean: the ENTIRE document including the full <body> must fit in your response — '
-        + 'a page with elaborate styles but no body content is a failure. Output only the HTML, no prose, no code fences.'
-      : 'Output the complete deliverable content directly (code or Markdown). Do not describe what you would do — produce it.',
-    reviewer: 'Review the upstream deliverable. Output a Markdown report: concrete issues, risks, and missing pieces, each with severity. If it is solid, say so explicitly.',
+      ? 'Produce a usable HTML artifact. Prefer concise, complete HTML with head and body content; choose the structure and visual approach that best fits the task.'
+      : 'Produce the useful deliverable content directly. Choose Markdown, code, or structured notes as appropriate.',
+    reviewer: 'Review the upstream work plainly. Call out concrete issues and risks; if it is solid, say so explicitly.',
     fixer: isHtml
-      ? 'Fix every reported issue in the upstream HTML deliverable and output the COMPLETE corrected HTML document (inline CSS/JS). Preserve everything that was not flagged. Output only the HTML, no prose, no code fences.'
-      : 'Apply a focused fix for the reported problem and output the corrected deliverable plus a short summary of what changed.',
+      ? 'Repair the upstream HTML deliverable. Preserve what works, fix the reported problem, and return the corrected artifact.'
+      : 'Apply a focused fix for the reported problem and output the corrected deliverable or a concise repair summary.',
   }[agent.role] ?? 'Produce your deliverable directly in the response.';
 
   return [
-    'You are one specialist on the Roundtable AI team. You respond through a chat API:',
-    'you have NO shell and NO file system — never emit commands like `ls` or `cat`.',
-    'Put your entire deliverable directly in your reply.',
+    'You are one specialist on the Roundtable AI team. You respond through a chat API.',
+    'You do not have shell or file-system access, so put your useful output directly in the reply.',
     `You are ${agent.displayName}, the ${agent.role}.`,
     `Instruction: ${roleInstruction}`,
     `Original user request: ${input.message}`,
@@ -684,9 +681,9 @@ function splitArgs(raw: string): string[] {
   return raw.split(/\s+/).map((item) => item.trim()).filter(Boolean);
 }
 
-function timeoutMs(): number {
+function timeoutMs(): number | undefined {
   const parsed = Number(process.env.ROUNDTABLE_AGENT_TIMEOUT_MS);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 120_000;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
 // Optional output ceiling for chat model deliverables. Unset by default: the

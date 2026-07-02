@@ -88,11 +88,13 @@ export async function runOnOpenAICompat(input: OpenAICompatRunInput): Promise<Op
     );
   }
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), input.timeoutMs ?? 120_000);
+  const controller = input.timeoutMs ? new AbortController() : null;
+  const timer = controller && input.timeoutMs
+    ? setTimeout(() => controller.abort(), input.timeoutMs)
+    : null;
   let response: Response;
   try {
-    response = await fetch(`${config.baseUrl.replace(/\/$/, '')}/chat/completions`, {
+    const request: RequestInit = {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -108,13 +110,14 @@ export async function runOnOpenAICompat(input: OpenAICompatRunInput): Promise<Op
         temperature: input.temperature ?? 0.7,
         stream: false,
       }),
-      signal: controller.signal,
-    });
+    };
+    if (controller) request.signal = controller.signal;
+    response = await fetch(`${config.baseUrl.replace(/\/$/, '')}/chat/completions`, request);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new OpenAICompatRequestError(`openai_compat_network_error: ${message}`);
   } finally {
-    clearTimeout(timer);
+    if (timer) clearTimeout(timer);
   }
 
   const data = (await response.json()) as {

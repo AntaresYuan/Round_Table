@@ -67,6 +67,12 @@ function normalizeLiveArtifacts(artifacts, agents) {
   });
 }
 
+function uniqueTasksById(tasks) {
+  const byId = new Map();
+  for (const task of tasks || []) byId.set(task.id, task);
+  return [...byId.values()];
+}
+
 function liveArtifactsFromTurns(liveTurns, agents, liveStatus) {
   const turns = liveTurns || [];
   return [
@@ -99,7 +105,7 @@ function buildLocalScene(baseScene, liveTurns, agents) {
   // arrows on the table appear as each task finishes — not all at once.
   const stageStates = result?.workflowRun?.stageStates || {};
   const stageToTaskStatus = { done: 'completed', failed: 'failed', blocked: 'blocked', running: 'running', pending: 'pending' };
-  const liveTasks = result?.plan?.tasks?.map((task) => {
+  const liveTasks = uniqueTasksById(result?.plan?.tasks || []).map((task) => {
     const owner = ownerFor(task);
     const stageStatus = stageStates[task.id]?.status;
     const taskStatus = stageStatus
@@ -107,7 +113,7 @@ function buildLocalScene(baseScene, liveTurns, agents) {
       : (completed ? 'completed' : result?.dispatchStatus === 'running' ? 'running' : 'pending');
     status[owner.agentId] = taskStatus === 'completed' ? 'done' : taskStatus === 'running' ? 'working' : 'idle';
     return { ...task, owner: owner.agentId, status: taskStatus };
-  }) || [];
+  });
 
   return {
     ...baseScene,

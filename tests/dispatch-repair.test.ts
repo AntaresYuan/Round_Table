@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runAgentTask } from '../src/server/actions/agent-runner.js';
+import { resetData } from '../src/server/store.js';
 import {
   makeFixerTask,
   plannedTaskPatches,
@@ -144,12 +145,15 @@ describe('runAgentTask — chat model deliverable extraction', () => {
 
   beforeEach(async () => {
     tempDir = await mkdtemp(join(tmpdir(), 'roundtable-chat-'));
+    process.env.ROUNDTABLE_DATA_PATH = join(tempDir, 'data.json');
     process.env.ROUNDTABLE_OPENAI_API_KEY = 'test-key';
     process.env.ROUNDTABLE_OPENAI_BASE_URL = 'https://model.test/v1';
     process.env.ROUNDTABLE_OPENAI_MODEL = 'test-model';
+    await resetData();
   });
 
   afterEach(async () => {
+    delete process.env.ROUNDTABLE_DATA_PATH;
     delete process.env.ROUNDTABLE_OPENAI_API_KEY;
     delete process.env.ROUNDTABLE_OPENAI_BASE_URL;
     delete process.env.ROUNDTABLE_OPENAI_MODEL;

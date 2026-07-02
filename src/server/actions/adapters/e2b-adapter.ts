@@ -68,11 +68,10 @@ export async function runOnE2B(input: AgentRunInput): Promise<AgentRunOutput> {
     const command = input.command ?? 'sh';
     const args = input.args ?? ['-c', input.prompt ?? ''];
     // exactOptionalPropertyTypes: only include keys that actually have a value.
-    const runOpts: { cwd?: string; envs?: Record<string, string>; timeoutMs: number } = {
-      timeoutMs: input.timeoutMs ?? 120_000,
-    };
+    const runOpts: { cwd?: string; envs?: Record<string, string>; timeoutMs?: number } = {};
     if (input.cwd) runOpts.cwd = input.cwd;
     if (input.env) runOpts.envs = input.env;
+    if (input.timeoutMs) runOpts.timeoutMs = input.timeoutMs;
     const result = await sandbox.commands.run([command, ...args].join(' '), runOpts);
     const stdout = (result.stdout ?? '').trim();
     const stderr = (result.stderr ?? '').trim();

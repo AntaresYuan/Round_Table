@@ -90,11 +90,13 @@ export async function runOnMiniMax(input: MiniMaxRunInput): Promise<MiniMaxRunOu
     throw new MiniMaxUnavailableError('MINIMAX_API_KEY is not set');
   }
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), input.timeoutMs ?? 120_000);
+  const controller = input.timeoutMs ? new AbortController() : null;
+  const timer = controller && input.timeoutMs
+    ? setTimeout(() => controller.abort(), input.timeoutMs)
+    : null;
   let response: Response;
   try {
-    response = await fetch(`${config.baseUrl.replace(/\/$/, '')}/chat/completions`, {
+    const request: RequestInit = {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -114,13 +116,14 @@ export async function runOnMiniMax(input: MiniMaxRunInput): Promise<MiniMaxRunOu
         thinking: { type: input.thinking ? 'adaptive' : 'disabled' },
         reasoning_split: true,
       }),
-      signal: controller.signal,
-    });
+    };
+    if (controller) request.signal = controller.signal;
+    response = await fetch(`${config.baseUrl.replace(/\/$/, '')}/chat/completions`, request);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new MiniMaxRequestError(`minimax_network_error: ${message}`);
   } finally {
-    clearTimeout(timer);
+    if (timer) clearTimeout(timer);
   }
 
   const data = (await response.json()) as {

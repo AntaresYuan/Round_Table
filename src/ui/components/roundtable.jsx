@@ -178,7 +178,7 @@ function ArchNode({ x, y, w, h, owner, title, sub, done, big }) {
   );
 }
 function LiveRunBoard({ tasks, agents, w, h, big, run }) {
-  const rows = (tasks || []).slice(0, 5);
+  const rows = uniqueTasksById(tasks || []).slice(0, 5);
   const ownerFor = (task) => {
     if (task.owner && agents[task.owner]) return agents[task.owner];
     const role = String(task.assignee || '').replace(/^@/, '');
@@ -426,7 +426,7 @@ function seatForTask(task, seats, agents) {
 // progressively as tasks complete, building up the real dependency graph on the
 // table. This is a static relationship, not an upstream→downstream flow.
 function DependencyArrows({ scene, agents, seats }) {
-  const tasks = scene.tasks || [];
+  const tasks = uniqueTasksById(scene.tasks || []);
   if (tasks.length === 0) return null;
   const byId = new Map(tasks.map((t) => [t.id, t]));
   const edges = [];
@@ -461,6 +461,12 @@ function DependencyArrows({ scene, agents, seats }) {
       })}
     </>
   );
+}
+
+function uniqueTasksById(tasks) {
+  const byId = new Map();
+  for (const task of tasks || []) byId.set(task.id, task);
+  return [...byId.values()];
 }
 
 function Beams({ scene, agents, seats }) {

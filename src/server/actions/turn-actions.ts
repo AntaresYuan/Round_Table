@@ -692,11 +692,10 @@ export async function dispatchTurn(input: DispatchInput): Promise<DispatchRespon
       ...(task.repairTargetTaskId !== undefined ? { repairTargetTaskId: task.repairTargetTaskId } : {}),
     }));
   const completed = await updateTurn(turn.id, (current) => {
+    const mergedTasks = mergePlanTasks(current.plan.tasks, derivedTasks);
     const nextTurn = {
       ...current,
-      plan: derivedTasks.length > 0
-        ? { ...current.plan, tasks: [...current.plan.tasks, ...derivedTasks] }
-        : current.plan,
+      plan: { ...current.plan, tasks: mergedTasks },
       dispatchStatus: failed ? 'failed' as const : 'completed' as const,
       dispatchAdapter: adapter,
       dispatchedAt: nowIso(),
@@ -1416,6 +1415,15 @@ function workflowRunFromTasks(tasks: ScheduledTask[]): WorkflowRun {
   };
 }
 
+function mergePlanTasks(existing: PlanTask[], additions: PlanTask[]): PlanTask[] {
+  const byId = new Map<string, PlanTask>();
+  for (const task of existing) byId.set(task.id, task);
+  for (const task of additions) {
+    byId.set(task.id, { ...(byId.get(task.id) ?? {}), ...task });
+  }
+  return [...byId.values()];
+}
+
 function maxFixRounds(): number {
   const parsed = Number(process.env.ROUNDTABLE_MAX_FIX_ROUNDS);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 2;
@@ -1616,35 +1624,21 @@ function formatHandoffContext(
     ].filter(Boolean).join('\n\n'))
     .join('\n\n---\n\n');
   return [
-    `# HandoffCard V2`,
+    `# Roundtable handoff`,
     '',
-    `protocolVersion: ${card.protocolVersion}`,
-    `cardId: ${card.cardId}`,
-    `missionId: ${card.missionId}`,
-    `fromAgent: ${card.fromAgent}`,
-    `toAgent: ${card.toAgent}`,
+    `From ${card.fromAgent} to ${card.toAgent}.`,
     '',
-    `## Task`,
+    `## Current task`,
+    '',
+    card.task.title,
     '',
     card.task.brief,
     '',
-    `## Context package`,
+    `## Mission context`,
     '',
     card.contextPackage.summary,
     '',
-    card.artifacts.length > 0
-      ? [
-          `## Artifact references`,
-          '',
-          ...card.artifacts.map((artifact) => `- ${artifact.id} (${artifact.kind}) ${artifact.title}`),
-          '',
-        ].join('\n')
-      : '',
-    upstream ? `## Upstream outputs\n\n${upstream}` : '',
-    '',
-    `## Next action`,
-    '',
-    card.nextAction,
+    upstream ? `## Upstream output\n\n${upstream}` : '',
     '',
     card.risks.length > 0 ? `## Risks\n\n${card.risks.map((risk) => `- ${risk}`).join('\n')}` : '',
   ].filter(Boolean).join('\n');

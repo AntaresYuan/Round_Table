@@ -124,6 +124,10 @@ describe('dispatchTurn — DAG scheduler integration', () => {
     expect(result.dispatchStatus).toBe('completed');
     expect(result.records.some((r) => r.status === 'failed' && r.agentId === 'vera')).toBe(true);
     expect(result.records.some((r) => r.status === 'completed' && r.agentId === 'fixer' && r.producedFor)).toBe(true);
+    const stored = await getTurn(turn.id);
+    expect(stored).not.toBeNull();
+    const taskIds = stored?.plan.tasks.map((task) => task.id) ?? [];
+    expect(new Set(taskIds).size).toBe(taskIds.length);
     expect(result.mission?.finalDelivery.confidence).not.toBe('blocked');
     expect(result.mission?.finalDelivery.recommendation).toBe('accept');
     expect(JSON.parse(result.artifacts.find((artifact) => artifact.id === `review_summary_${turn.id}`)?.preview ?? '{}')?.risks)
