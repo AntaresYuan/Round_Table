@@ -362,7 +362,7 @@ function pathForTask(task: PlanTask): string {
 
 // Does this build target a renderable web page? Covers EN + 中文 vocabulary.
 function wantsWebPage(text: string): boolean {
-  return /\b(website|web\s?page|webpage|landing|page|site|html|frontend|ui|dashboard|portfolio)\b|网站|网页|页面|前端|官网|落地页|主页|仪表盘|看板/i.test(text);
+  return /\b(website|web\s?page|webpage|landing|page|site|html|frontend|ui|dashboard|portfolio|checkout|payment|cart)\b|网站|网页|页面|前端|官网|落地页|主页|仪表盘|看板|结账|支付|购物车/i.test(text);
 }
 
 function kindForPath(path: string): ArtifactKind {
@@ -424,6 +424,9 @@ function localArtifactText(task: PlanTask, message: string, path: string, handof
 
 function localHtmlArtifact(message: string): string {
   const title = userGoalTitle(message);
+  if (/\b(checkout|payment|cart|post-?payment|stripe)\b|结账|支付|购物车|订单确认/i.test(message)) {
+    return checkoutFlowHtml(title);
+  }
   const isPersonalSite = /个人网站|portfolio|personal\s+site|resume|简历|主页/i.test(message);
   const headline = isPersonalSite ? '个人网站' : title;
   const subhead = isPersonalSite
@@ -467,6 +470,40 @@ function localHtmlArtifact(message: string): string {
     '<section class="grid">',
     ...sections.map(([heading, body]) => `<article class="card"><h2>${escapeHtml(heading)}</h2><p>${escapeHtml(body)}</p></article>`),
     '</section>',
+    '</main>',
+    '</body>',
+    '</html>',
+  ].join('\n');
+}
+
+function checkoutFlowHtml(title: string): string {
+  return [
+    '<!doctype html>',
+    '<html lang="en">',
+    '<head>',
+    '<meta charset="utf-8" />',
+    '<meta name="viewport" content="width=device-width, initial-scale=1" />',
+    `<title>${escapeHtml(title)}</title>`,
+    '<style>',
+    ':root{color-scheme:light;--ink:#172033;--muted:#667085;--line:#d8e0ea;--panel:#ffffff;--bg:#f5f7fb;--accent:#2563eb;--ok:#12b76a;--warn:#f79009}',
+    '*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}',
+    'main{max-width:1180px;margin:0 auto;padding:34px 24px 54px}.top{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:22px}.eyebrow{font-size:12px;font-weight:800;letter-spacing:.14em;text-transform:uppercase;color:var(--accent)}h1{font-size:34px;line-height:1.08;margin:5px 0 0}.secure{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--line);border-radius:999px;background:white;padding:8px 12px;color:var(--muted);font-size:13px}',
+    '.layout{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:18px}.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:0 18px 50px -35px rgba(18,31,56,.38)}.section{padding:18px;border-bottom:1px solid var(--line)}.section:last-child{border-bottom:0}.section h2{font-size:15px;margin:0 0 12px}.steps{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:14px}.step{border:1px solid var(--line);background:#f8fafc;border-radius:10px;padding:10px}.step b{display:block;font-size:12px}.step span{display:block;color:var(--muted);font-size:11px;margin-top:2px}.step.active{border-color:var(--accent);background:#eff6ff;color:var(--accent)}',
+    '.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.field{display:grid;gap:6px}.field label{font-size:12px;font-weight:700;color:#344054}.field input,.field select{height:42px;border:1px solid var(--line);border-radius:9px;padding:0 11px;font:inherit;background:#fff}.error{border-color:#f04438!important;background:#fff8f7!important}.hint{font-size:12px;color:#f04438}.paybox{display:grid;gap:10px}.method{display:flex;align-items:center;justify-content:space-between;border:1px solid var(--line);border-radius:10px;padding:12px}.method.active{border-color:var(--accent);background:#eff6ff}.badge{font-size:11px;font-weight:800;color:var(--ok);background:#ecfdf3;border-radius:999px;padding:3px 8px}.summary{padding:18px;position:sticky;top:18px}.item,.row{display:flex;justify-content:space-between;gap:12px}.item{padding:12px 0;border-bottom:1px solid var(--line)}.item strong{font-size:13px}.item span,.row span{color:var(--muted);font-size:13px}.row{padding:8px 0}.total{font-size:18px;font-weight:850;color:var(--ink)}.cta{width:100%;height:46px;margin-top:14px;border:0;border-radius:11px;background:var(--accent);color:white;font:inherit;font-weight:850;cursor:pointer}.confirm{display:grid;gap:8px;border:1px solid #abefc6;background:#ecfdf3;color:#067647;border-radius:12px;padding:13px;margin-top:12px}.confirm b{font-size:14px}.confirm span{font-size:12px;color:#067647}@media(max-width:860px){.layout{grid-template-columns:1fr}.summary{position:static}.steps{grid-template-columns:1fr 1fr}.grid{grid-template-columns:1fr}}',
+    '</style>',
+    '</head>',
+    '<body>',
+    '<main>',
+    '<div class="top"><div><div class="eyebrow">Checkout flow delivery</div><h1>Cart to confirmation checkout</h1></div><div class="secure">Lock icon Secure payment handoff</div></div>',
+    '<div class="steps"><div class="step active"><b>1. Cart</b><span>Review order</span></div><div class="step active"><b>2. Details</b><span>Validate inputs</span></div><div class="step active"><b>3. Payment</b><span>Provider handoff</span></div><div class="step"><b>4. Confirmation</b><span>Receipt state</span></div></div>',
+    '<div class="layout">',
+    '<section class="panel">',
+    '<div class="section"><h2>Customer details</h2><div class="grid"><div class="field"><label>Email</label><input value="alex@example.com" /></div><div class="field"><label>Phone</label><input value="+1 415 555 0148" /></div><div class="field"><label>Country</label><select><option>United States</option></select></div><div class="field"><label>ZIP code</label><input class="error" value="94" /><div class="hint">ZIP must be 5 digits before payment handoff.</div></div></div></div>',
+    '<div class="section"><h2>Payment handoff</h2><div class="paybox"><div class="method active"><div><strong>Card via Stripe</strong><div class="hint" style="color:var(--muted)">Tokenize card, then create payment intent server-side.</div></div><span class="badge">selected</span></div><div class="method"><div><strong>Wallet</strong><div class="hint" style="color:var(--muted)">Apple Pay / Google Pay when available.</div></div><span>optional</span></div></div></div>',
+    '<div class="section"><h2>Post-payment confirmation</h2><div class="confirm"><b>Payment authorized. Order RT-1048 ready.</b><span>Show this state after webhook confirmation and persist receipt details.</span></div></div>',
+    '</section>',
+    '<aside class="panel summary"><h2>Cart summary</h2><div class="item"><div><strong>Growth plan</strong><br><span>Annual subscription</span></div><strong>$240</strong></div><div class="item"><div><strong>Priority support</strong><br><span>Monthly add-on</span></div><strong>$29</strong></div><div class="row"><span>Subtotal</span><strong>$269</strong></div><div class="row"><span>Tax estimate</span><strong>$21.52</strong></div><div class="row total"><span>Total</span><strong>$290.52</strong></div><button class="cta">Continue to payment</button><div class="confirm"><b>Acceptance criteria covered</b><span>Cart summary, validation, payment handoff, and confirmation state are all represented.</span></div></aside>',
+    '</div>',
     '</main>',
     '</body>',
     '</html>',

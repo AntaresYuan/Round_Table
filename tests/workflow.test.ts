@@ -2,8 +2,10 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { createChat, createMessage } from '../src/server/actions/chat-actions.js';
+import { createChat, createMessage, deleteChat } from '../src/server/actions/chat-actions.js';
 import { normalizeAdapter } from '../src/server/actions/agent-runner.js';
+import { listMissions, rejectHandoff } from '../src/server/actions/mission-actions.js';
+import { listHandoffsByChat } from '../src/server/actions/read-actions.js';
 import { answerClarification, approveTurn, createTurn, listTurns, reviewSeverities } from '../src/server/actions/turn-actions.js';
 import { createWorkbench } from '../src/server/actions/workbench-actions.js';
 import { resetData } from '../src/server/store.js';
@@ -84,10 +86,43 @@ describe('Roundtable clean workflow', () => {
     expect(approval.workspacePath).toContain('workspaces/test');
     expect(approval.artifacts.find((artifact) => artifact.id.startsWith('task_vera_'))?.preview)
       .toContain('Previous agent output');
+    expect(approval.artifacts.find((artifact) => artifact.id.startsWith('task_vera_'))?.preview)
+      .toContain('HandoffCard V2');
 
     const history = await listTurns(chat.id);
     expect(history).toHaveLength(1);
     expect(history[0]?.dispatchStatus).toBe('completed');
+
+    const handoffs = await listHandoffsByChat(actor, chat.id);
+    expect(handoffs.filter((handoff) => handoff.card?.['protocolVersion'] === 'roundtable.handoff.v2').length)
+      .toBeGreaterThanOrEqual(turn.plan.tasks.length);
+    expect((handoffs.find((handoff) => handoff.card?.['protocolVersion'] === 'roundtable.handoff.v2')?.card?.['handoffV2'] as { provenance?: { selectionReason?: string } } | undefined)?.provenance?.selectionReason)
+      .toContain('Selected');
+    const rejected = await rejectHandoff(actor, handoffs.find((handoff) => handoff.card?.['protocolVersion'] === 'roundtable.handoff.v2')!.id);
+    expect(rejected.currentStageId).toBe('repair');
+    expect(rejected.tasks.some((task) => task.id.startsWith('repair_handoff_') && task.status === 'pending')).toBe(true);
+  });
+
+  it('deletes mission records when a chat is deleted', async () => {
+    const workbench = await createWorkbench(actor, {
+      name: 'Delete mission test',
+      workspacePath: 'workspaces/delete-test',
+    });
+    const chat = await createChat(actor, {
+      workbenchId: workbench.id,
+      title: 'Temporary mission',
+    });
+    const turn = await createTurn({
+      actor,
+      chatId: chat.id,
+      message: 'Build a disposable prototype and review it.',
+    });
+
+    expect((await listMissions(actor, chat.id)).map((mission) => mission.id)).toContain(turn.missionId);
+
+    await deleteChat(actor, chat.id);
+
+    expect(await listMissions(actor, chat.id)).toHaveLength(0);
   });
 
   it('gives each task a distinct title that excludes the clarification block', async () => {

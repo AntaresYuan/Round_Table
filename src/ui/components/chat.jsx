@@ -360,12 +360,12 @@ function ConversationRail({ workbench, workbenches, tasks, agents, activeId, onP
         <button onClick={onNewTask} style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
           padding: '8px 12px', borderRadius: 'var(--r-sm)', border: 'none', background: 'var(--accent)',
           color: '#fff', font: 'inherit', fontSize: 13, fontWeight: 500, cursor: 'pointer' }}>
-          <Icon name="plus" size={15} /> New task
+          <Icon name="plus" size={15} /> New Mission
         </button>
       </div>
 
       <div style={{ padding: '2px 16px 6px', fontSize: 10, fontWeight: 600, letterSpacing: '.09em',
-        textTransform: 'uppercase', color: 'var(--text-faint)' }}>Tasks on this workbench</div>
+        textTransform: 'uppercase', color: 'var(--text-faint)' }}>Missions on this workbench</div>
       <div style={{ flex: 1, overflowY: 'auto', padding: '0 8px' }}>
         {(tasks || []).map((c) => {
           const active = c.id === activeId;

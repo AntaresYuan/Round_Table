@@ -2,8 +2,8 @@
 /* ============================================================================
    Roundtable — inspector.jsx
    The right-hand inspector panel and its tabs: artifact Drawer, the live message
-   Thread, the Files list, the Deps graph host, Memory, and the structured
-   meeting Notes. Extracted from app-root.jsx so the side panel is one module.
+   Thread, the Files list, and the structured meeting Notes. Extracted from
+   app-root.jsx so the side panel is one module.
    ============================================================================ */
 
 import React from 'react';
@@ -11,8 +11,6 @@ import { Avatar, RoleTag, Icon, Spinner, tint, alpha } from './primitives';
 import { ArtifactRenderer, CodeBlock, VChip, HandoffCard, iconBtn, normalizeArtifactForDisplay } from './cards';
 import { LocalLiveThread } from './live-turn';
 import { Thread } from './stage-scene';
-import { DependencyGraphSidebar } from './dep-graph';
-import { MemoryPanel } from './memory-panel';
 import { sceneAt, meetingNotes } from './roundtable';
 import { liveArtifactsFromTurns } from '../lib/live-scene';
 import { RT } from '../lib/rt';
@@ -188,7 +186,7 @@ function FileRow({ art, agents, onOpen, activeChatId }) {
     </button>
   );
 }
-function InspectorPanel({ tab, setTab, clock, agents, scene, width, onOpenArtifact, onAction, onClose, live, liveArtifacts, liveMessages, liveHandoffs, activeChatId, memory, localTurns, localStatus, onApproveLocalTurn, localTurnActions, onRewrite }) {
+function InspectorPanel({ tab, setTab, clock, agents, scene, width, onOpenArtifact, onAction, onClose, live, liveArtifacts, liveMessages, liveHandoffs, activeChatId, localTurns, localStatus, onApproveLocalTurn, localTurnActions, onRewrite }) {
   const placed = sceneAt(clock).placed;
   const hasLocalTurns = localTurns && localTurns.length > 0;
   const localArtifacts = hasLocalTurns ? liveArtifactsFromTurns(localTurns, agents, localStatus) : [];
@@ -213,8 +211,6 @@ function InspectorPanel({ tab, setTab, clock, agents, scene, width, onOpenArtifa
       <div style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '6px 8px 0' }}>
         {tabBtn('chat', 'Chat')}
         {tabBtn('files', `Files · ${created.length + provided.length}`)}
-        {tabBtn('memory', 'Memory')}
-        {tabBtn('deps', 'Deps')}
         {tabBtn('notes', 'Notes')}
         <button onClick={onClose} style={{ ...iconBtn, border: 'none', background: 'transparent' }}><Icon name="x" size={15} /></button>
       </div>
@@ -245,36 +241,11 @@ function InspectorPanel({ tab, setTab, clock, agents, scene, width, onOpenArtifa
             ? <div style={{ fontSize: 12.5, color: 'var(--text-faint)', fontStyle: 'italic', padding: '4px 2px' }}>Nothing yet — artifacts land here as the team works.</div>
             : created.map((a) => <FileRow key={a.id} art={a} agents={agents} onOpen={onOpenArtifact} activeChatId={activeChatId} />)}
         </div>
-      ) : tab === 'memory' ? (
-        <MemoryPanel memory={memory} />
-      ) : tab === 'deps' ? (
-        <div style={{ flex: 1, overflowY: 'auto', padding: '14px 14px 24px' }}>
-          {live || hasLocalTurns ? (
-            <div style={{ fontSize: 12.5, color: 'var(--text-faint)', fontStyle: 'italic', padding: '4px 2px' }}>
-              The dependency graph isn&rsquo;t wired to live data yet — it&rsquo;ll map artifacts as the team links them.</div>
-          ) : (
-            <DependencyGraphSidebar
-              graph={RT.DEPENDENCY_GRAPH}
-              agents={agents}
-              chatId={RT.WORKBENCH?.id || 'main'}
-              onNodeClick={(node) => {
-                const art = Object.values(RT.ARTIFACTS).find((a) => a.id === node.artifactId);
-                if (art && onOpenArtifact) onOpenArtifact(art);
-              }}
-            />
-          )}
-        </div>
       ) : live || hasLocalTurns ? (
         <LiveNotes agents={agents} artifacts={created} handoffs={liveHandoffs} />
       ) : (
         <NotesContent clock={clock} agents={agents} notes={notes} />
       )}
-
-      <div style={{ padding: '10px 14px', borderTop: '1px solid var(--border)', fontSize: 11, color: 'var(--text-faint)',
-        display: 'flex', alignItems: 'center', gap: 6 }}>
-        <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--run)', animation: 'rt-blink 1.4s infinite' }} />
-        live · kept by the facilitator
-      </div>
     </div>
   );
 }

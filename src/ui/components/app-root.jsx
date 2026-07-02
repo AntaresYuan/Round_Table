@@ -125,6 +125,8 @@ function storedTurnToLiveTurn(turn) {
           result: {
             ok: true,
             id: turn.id,
+            missionId: turn.missionId,
+            workflowTemplateId: turn.workflowTemplateId,
             provider: turn.provider,
             model: turn.model,
             pmMessage: turn.pmMessage,
@@ -143,6 +145,7 @@ function storedTurnToLiveTurn(turn) {
             plan: turn.plan,
             workflow: turn.workflow,
             workflowRun: turn.workflowRun,
+            mission: turn.mission,
             needsClarification: turn.needsClarification,
             clarifyQuestions: turn.clarifyQuestions,
             clarifyAnswers: turn.clarifyAnswers,
@@ -480,15 +483,6 @@ function App() {
       trpcUtils.chats.list.invalidate();
     },
   });
-  const updateProfile = trpc.userProfile.update.useMutation({
-    onSuccess: () => trpcUtils.userProfile.get.invalidate(),
-  });
-  const pinWorkbench = trpc.workbenchPinned.pin.useMutation({
-    onSuccess: () => trpcUtils.workbenchPinned.list.invalidate(),
-  });
-  const unpinWorkbench = trpc.workbenchPinned.unpin.useMutation({
-    onSuccess: () => trpcUtils.workbenchPinned.list.invalidate(),
-  });
   const liveWorkbenches = workbenchesQ.data ?? [];
   const activeChat =
     authed && chatsQ.data && selectedChatId
@@ -516,11 +510,6 @@ function App() {
       : localTasks.length > 0
         ? localTasks
         : RT.TASKS;
-  const profileQ = trpc.userProfile.get.useQuery(undefined, { enabled: authed });
-  const pinsQ = trpc.workbenchPinned.list.useQuery(
-    { workbenchId: activeWorkbenchId ?? '' },
-    { enabled: authed && !!activeWorkbenchId },
-  );
   const artifactsQ = trpc.artifacts.listByChat.useQuery(
     { chatId: activeChatId ?? '' },
     { enabled: authed && !!activeChatId },
@@ -551,6 +540,21 @@ function App() {
   const activeTaskTitle = localLive
     ? (turnToTask(activeLocalTurn || localTurns[0] || { message: '' }).title ?? '')
     : (tasks.find((tk) => tk.id === activeChatId)?.title ?? '');
+  const missionSuggestionContext = useMemo(() => {
+    const recentLocalText = localTurns
+      .slice(0, 5)
+      .map((turn) => turn.message)
+      .filter(Boolean)
+      .join(' ');
+    const recentTaskText = tasks
+      .slice(0, 5)
+      .map((task) => task.title)
+      .filter(Boolean)
+      .join(' ');
+    return [activeTaskTitle, localLive ? recentLocalText : recentTaskText]
+      .filter(Boolean)
+      .join(' ');
+  }, [activeTaskTitle, localLive, localTurns, tasks]);
   const [recDismissed, setRecDismissed] = useState(null);
   const [, setWfTick] = useState(0);
   const workflowRec = recommendWorkflow(activeTaskTitle, RT.BUILTIN_WORKFLOWS, RT.WORKBENCH.workflowId);
@@ -688,7 +692,7 @@ function App() {
     setSelectedWorkbenchId(created.id);
     return created;
   };
-  const sendLocalTurn = async (message, turnId, chatIdOverride) => {
+  const sendLocalTurn = async (message, turnId, chatIdOverride, workflowTemplateId) => {
     const id = turnId || 'live-' + Date.now();
     const createdAt = new Date().toISOString();
     setInspectorTab('chat');
@@ -704,6 +708,7 @@ function App() {
           message,
           turnId: id,
           chatId: chatIdOverride ?? localChatId,
+          ...(workflowTemplateId ? { workflowTemplateId } : {}),
           ...preferredAgentAdapterRequest(),
         }),
       });
@@ -790,6 +795,7 @@ function App() {
                 dispatchWorkspacePath: data.workspacePath,
                 dispatch: data.records,
                 artifacts: data.artifacts,
+                mission: data.mission,
                 ...(data.workflowRun ? { workflowRun: data.workflowRun } : {}),
               },
             }
@@ -866,48 +872,65 @@ function App() {
       turn.id === turnId ? { ...turn, discarded: true } : turn
     )));
   };
-  const createLocalTask = (goal) => {
+  const decideLocalDelivery = async (turnId, decision) => {
+    try {
+      const res = await fetch('/api/orchestrator/delivery', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ turnId, decision }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || 'delivery_decision_failed');
+      setLocalTurns((turns) => turns.map((turn) => (
+        turn.id === turnId
+          ? {
+              ...turn,
+              result: {
+                ...turn.result,
+                needsApproval: data.needsApproval,
+                approvalStatus: data.approvalStatus,
+                approvedAt: data.approvedAt,
+                dispatchStatus: data.dispatchStatus,
+                dispatchAdapter: data.dispatchAdapter,
+                dispatchedAt: data.dispatchedAt,
+                dispatchStage: data.dispatchStage,
+                dispatchError: data.dispatchError,
+                dispatchWorkspacePath: data.workspacePath,
+                dispatch: data.records,
+                artifacts: data.artifacts,
+                mission: data.mission,
+                workflowRun: data.workflowRun,
+              },
+            }
+          : turn
+      )));
+    } catch {
+      loadLocalHistory();
+    }
+  };
+  const createLocalTask = (goal, workflowTemplateId) => {
     setModal(null);
     setView('roundtable');
     setInspectorTab('chat');
     setNotesOpen(true);
-    sendLocalTurn(goal);
+    sendLocalTurn(goal, undefined, undefined, workflowTemplateId);
   };
-  const sendComposerMessage = async (message) => {
+  const sendComposerMessage = async (message, workflowTemplateId) => {
     if (authed) {
       if (activeChatId) {
         createMessage.mutate({ chatId: activeChatId, content: message });
-        sendLocalTurn(message, undefined, activeChatId);
+        sendLocalTurn(message, undefined, activeChatId, workflowTemplateId);
       } else {
         const workbench = await ensureWorkbench();
         const chat = await createChat.mutateAsync({ title: message.slice(0, 160), workbenchId: workbench.id });
         if (chat) {
           await createMessage.mutateAsync({ chatId: chat.id, content: message });
-          sendLocalTurn(message, undefined, chat.id);
+          sendLocalTurn(message, undefined, chat.id, workflowTemplateId);
         }
       }
       return;
     }
-    sendLocalTurn(message);
-  };
-  const memory = {
-    live: authed,
-    workbench: activeWorkbench,
-    profile: profileQ.data,
-    pins: pinsQ.data ?? [],
-    profileSaving: updateProfile.isPending,
-    pinSaving: pinWorkbench.isPending || unpinWorkbench.isPending,
-    profileError: updateProfile.error?.message,
-    pinError: pinWorkbench.error?.message || unpinWorkbench.error?.message,
-    onSaveProfile: (patch) => updateProfile.mutate(patch),
-    onAddPin: (content) => {
-      if (!activeWorkbenchId) return;
-      pinWorkbench.mutate({ workbenchId: activeWorkbenchId, content });
-    },
-    onRemovePin: (id) => {
-      if (!activeWorkbenchId) return;
-      unpinWorkbench.mutate({ workbenchId: activeWorkbenchId, id });
-    },
+    sendLocalTurn(message, undefined, undefined, workflowTemplateId);
   };
   const breakoutData = RT.SCRIPT.find((b) => b.kind === 'breakout');
 
@@ -997,7 +1020,7 @@ function App() {
                               <div style={{ display: 'flex', gap: 9, justifyContent: 'center' }}>
                                 <button onClick={() => setModal('task')} style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '10px 16px',
                                   borderRadius: 'var(--r-sm)', border: 'none', cursor: 'pointer', background: 'var(--accent)', color: '#fff',
-                                  font: 'inherit', fontSize: 13, fontWeight: 500 }}><Icon name="plus" size={15} /> Start a task</button>
+                                  font: 'inherit', fontSize: 13, fontWeight: 500 }}><Icon name="plus" size={15} /> Start a Mission</button>
                               </div>
                             </div>
                           </div>
@@ -1007,9 +1030,9 @@ function App() {
                 {notesOpen && !compact && <ResizeHandle onResize={(dx) => setInspectorW((w) => Math.max(300, Math.min(640, w + dx)))} />}
                 {notesOpen && <InspectorPanel tab={inspectorTab} setTab={setInspectorTab} clock={scene.clock} width={compact ? 'min(100vw, 420px)' : inspectorW}
                   agents={agents} scene={scene} live={authed && !!activeChatId} liveArtifacts={liveArtifacts} liveMessages={liveMessages}
-                  liveHandoffs={liveHandoffs} activeChatId={activeChatId} memory={memory}
+                  liveHandoffs={liveHandoffs} activeChatId={activeChatId}
                   localTurns={activeLocalTurns.length ? activeLocalTurns : localTurns} localStatus={localStatus} onApproveLocalTurn={approveLocalTurn}
-                  localTurnActions={{ interrupt: interruptLocalTurn, redispatch: redispatchLocalTurn, discard: discardLocalTurn, clarify: answerLocalClarification, approve: approveLocalTurn }}
+                  localTurnActions={{ interrupt: interruptLocalTurn, redispatch: redispatchLocalTurn, discard: discardLocalTurn, clarify: answerLocalClarification, approve: approveLocalTurn, delivery: decideLocalDelivery }}
                   onOpenArtifact={setDrawerArt} onAction={onAction} onClose={() => setNotesOpen(false)}
                   onRewrite={sendComposerMessage} />}
               </div>
@@ -1037,17 +1060,18 @@ function App() {
         activeTask={(['working', 'speaking', 'thinking'].includes(st.status[dmAgent])) ? (RT.PLAN.tasks.find((tk) => tk.owner === dmAgent) || {}).id : null}
         onClose={() => setDmAgent(null)} />}
       {modal === 'task' && <NewTaskModal workbench={railWorkbench} members={memberIds} agents={agents}
-        onClose={() => setModal(null)} onCreate={async (goal) => {
+        suggestionContext={missionSuggestionContext}
+        onClose={() => setModal(null)} onCreate={async ({ goal, workflowTemplateId }) => {
           setModal(null);
           if (authed) {
             const workbench = await ensureWorkbench();
             const chat = await createChat.mutateAsync({ title: goal.slice(0, 160), workbenchId: workbench.id });
             if (chat) {
               await createMessage.mutateAsync({ chatId: chat.id, content: goal });
-              sendLocalTurn(goal, undefined, chat.id);
+              sendLocalTurn(goal, undefined, chat.id, workflowTemplateId);
             }
           } else {
-            createLocalTask(goal);
+            createLocalTask(goal, workflowTemplateId);
           }
         }} />}
       {modal === 'table' && <NewWorkbenchModal agents={agents} onClose={() => setModal(null)} onCreate={(input) => {

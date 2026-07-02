@@ -60,11 +60,54 @@ function LocalLiveThread({ turns, agents, turnActions }) {
 
 const STAGE_STATUS_STYLE = {
   done: { color: 'var(--ok)', label: 'done' },
+  running: { color: 'var(--accent)', label: 'running' },
   active: { color: 'var(--accent)', label: 'running' },
   blocked: { color: 'var(--warn, #b8860b)', label: 'blocked' },
   failed: { color: 'var(--bad)', label: 'failed' },
   pending: { color: 'var(--text-faint)', label: 'pending' },
 };
+
+const MISSION_STATUS_STYLE = {
+  awaiting_clarification: { color: 'var(--warn)', label: 'needs details' },
+  awaiting_approval: { color: 'var(--warn)', label: 'awaiting approval' },
+  running: { color: 'var(--run)', label: 'running' },
+  blocked: { color: 'var(--warn)', label: 'blocked' },
+  completed: { color: 'var(--ok)', label: 'ready' },
+  failed: { color: 'var(--bad)', label: 'failed' },
+};
+
+function MissionHeader({ mission, workflow }) {
+  if (!mission) return null;
+  const sty = MISSION_STATUS_STYLE[mission.status] || MISSION_STATUS_STYLE.awaiting_approval;
+  const checkpoint = (mission.checkpoints || []).find((cp) => cp.status === 'pending' || cp.status === 'blocked');
+  const currentStage = (workflow?.stages || []).find((stage) => stage.id === mission.currentStageId)
+    || (mission.stages || []).find((stage) => stage.id === mission.currentStageId);
+  return (
+    <div className="rt-rise" style={{ margin: '0 0 10px', border: '1px solid var(--border)',
+      borderLeft: `3px solid ${sty.color}`, borderRadius: 'var(--r-card)', background: 'var(--surface)',
+      boxShadow: 'var(--shadow-card)', overflow: 'hidden' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '11px 14px', flexWrap: 'wrap' }}>
+        <span style={{ display: 'grid', placeItems: 'center', width: 28, height: 28, borderRadius: 8,
+          background: alpha(sty.color, 14), color: sty.color }}>
+          <Icon name={mission.status === 'completed' ? 'check' : 'layers'} size={15} />
+        </span>
+        <div style={{ flex: 1, minWidth: 180 }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 13.5, fontWeight: 800, color: 'var(--text)' }}>Mission</span>
+            <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>{mission.workflowTemplateName || workflow?.name || 'Workflow'}</span>
+            <span className="mono" style={{ fontSize: 10.5, color: 'var(--text-faint)' }}>{mission.id}</span>
+          </div>
+          <div style={{ marginTop: 3, fontSize: 12.5, color: 'var(--text-muted)', lineHeight: 1.35 }}>
+            {currentStage ? `Current stage: ${currentStage.name}` : 'Preparing mission state'}
+            {checkpoint?.requiredAction ? ` · ${checkpoint.requiredAction}` : ''}
+          </div>
+        </div>
+        <span style={{ fontSize: 11.5, color: sty.color, padding: '3px 8px', borderRadius: 999,
+          background: alpha(sty.color, 14), fontWeight: 800 }}>{sty.label}</span>
+      </div>
+    </div>
+  );
+}
 
 // The planner needs more detail before it can build. Render its questions as
 // pick-one cards — a nocode user just clicks an option per question, then submits.
@@ -157,8 +200,11 @@ function LocalLiveTurn({ turn, agents, turnActions, showPreview }) {
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
             <span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--pm)' }}>Roundtable</span>
-            <span className="mono" style={{ fontSize: 10, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--text-faint)' }}>agent chain</span>
+            <span className="mono" style={{ fontSize: 10, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--text-faint)' }}>mission run</span>
           </div>
+          {turn.result?.mission && (
+            <MissionHeader mission={turn.result.mission} workflow={turn.result.workflow} />
+          )}
           {turn.status === 'pending' && (
             <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, color: 'var(--text-muted)', fontSize: 13.5 }}>
               <Spinner size={13} color="var(--text-muted)" /> running agents…
@@ -217,7 +263,7 @@ function LocalLiveTurn({ turn, agents, turnActions, showPreview }) {
                   onHandoff={null}
                 />
               )}
-              {turn.result.workflow && turn.result.workflowRun ? (
+              {turn.result.workflow && turn.result.workflowRun && (
                 <StageCards
                   workflow={turn.result.workflow}
                   workflowRun={turn.result.workflowRun}
@@ -225,7 +271,8 @@ function LocalLiveTurn({ turn, agents, turnActions, showPreview }) {
                   agents={agents}
                   dispatchStatus={turn.result.dispatchStatus}
                 />
-              ) : ((completed || failed || running || interrupted) && !(interrupted && turn.discarded) && (
+              )}
+              {(completed || failed || running || interrupted) && !(interrupted && turn.discarded) && (
                 <LocalResultCard
                   artifacts={artifacts}
                   dispatchStatus={turn.result.dispatchStatus}
@@ -234,8 +281,10 @@ function LocalLiveTurn({ turn, agents, turnActions, showPreview }) {
                   workspacePath={turn.result.dispatchWorkspacePath || turn.result.workspacePath}
                   previewArtifact={showPreview && !interrupted ? previewArtifact : null}
                   agents={agents}
+                  mission={turn.result.mission}
+                  onDecideDelivery={turnActions?.delivery ? (decision) => turnActions.delivery(turn.id, decision) : null}
                 />
-              ))}
+              )}
             </div>
           )}
         </div>
@@ -255,7 +304,13 @@ function StageCard({ stage, stageRun, artifacts, agents }) {
   const roles = new Set(
     stage.seats.filter((s) => s.ref.kind === 'role').map((s) => s.ref.role),
   );
-  const stageArtifacts = artifacts.filter((a) => roles.has(a.ownerAgentId));
+  const explicitIds = new Set(stageRun?.artifactIds || []);
+  const taskIds = new Set(stageRun?.taskIds || []);
+  const stageArtifacts = artifacts.filter((a) =>
+    explicitIds.has(a.id)
+    || [...taskIds].some((taskId) => a.id.startsWith(`${taskId}_`))
+    || roles.has(a.ownerAgentId),
+  );
   return (
     <div className="rt-rise" style={{ marginTop: 10, border: `1px solid ${alpha(sty.color, 35)}`,
       borderRadius: 'var(--r-card)', background: 'var(--surface)', boxShadow: 'var(--shadow-card)', overflow: 'hidden' }}>
@@ -411,11 +466,19 @@ function LocalInterruptedCard({ turn, agents, artifacts, onResume, onDiscard, on
 function StageCards({ workflow, workflowRun, artifacts, agents, dispatchStatus }) {
   if (!workflow || !workflowRun) return null;
   const stages = workflow.stages.filter(
-    (s) => s.kind !== 'intake' && (s.seats?.length ?? 0) > 0,
+    (s) => {
+      const status = workflowRun.stageStates?.[s.id]?.status || 'pending';
+      return s.kind !== 'intake'
+        && (s.seats?.length ?? 0) > 0
+        && (s.kind !== 'repair' || status !== 'pending');
+    },
   );
   const running = dispatchStatus === 'running';
   const firstUnfinishedId = stages.find(
-    (s) => (workflowRun.stageStates?.[s.id]?.status || 'pending') !== 'done',
+    (s) => {
+      const status = workflowRun.stageStates?.[s.id]?.status || 'pending';
+      return status !== 'done' && status !== 'completed';
+    },
   )?.id;
 
   const visible = stages.filter((s) => {
@@ -430,7 +493,9 @@ function StageCards({ workflow, workflowRun, artifacts, agents, dispatchStatus }
       {visible.map((stage) => {
         let stageRun = workflowRun.stageStates?.[stage.id];
         const status = stageRun?.status || 'pending';
-        if (running && status === 'pending' && stage.id === firstUnfinishedId) {
+        if (stageRun?.status === 'running') {
+          stageRun = { ...stageRun, status: 'active' };
+        } else if (running && status === 'pending' && stage.id === firstUnfinishedId) {
           stageRun = {
             ...(stageRun || {}),
             status: 'active',
@@ -551,10 +616,15 @@ function ExpandableArtifact({ artifact, owner }) {
   );
 }
 
-function LocalResultCard({ artifacts, dispatchStatus, dispatchAdapter, dispatchStage, workspacePath, previewArtifact, agents }) {
+function LocalResultCard({ artifacts, dispatchStatus, dispatchAdapter, dispatchStage, workspacePath, previewArtifact, agents, mission, onDecideDelivery }) {
   const completed = dispatchStatus === 'completed';
   const codeCount = artifacts.filter((artifact) => artifact.kind === 'code').length;
   const reviewCount = artifacts.filter((artifact) => artifact.ownerAgentId === 'reviewer').length;
+  const reportReady = mission?.finalDelivery?.status === 'ready';
+  const accepted = mission?.finalDelivery?.status === 'accepted';
+  const rejected = mission?.finalDelivery?.status === 'rejected';
+  const confidence = mission?.finalDelivery?.confidence || 'unknown';
+  const riskCount = mission?.finalDelivery?.risks?.length || 0;
   const statusColor = completed ? 'var(--ok)' : dispatchStatus === 'failed' ? 'var(--bad)' : 'var(--run)';
   return (
     <div style={{ marginTop: 12, border: '1px solid var(--border)', borderRadius: 'var(--r-card)',
@@ -564,10 +634,10 @@ function LocalResultCard({ artifacts, dispatchStatus, dispatchAdapter, dispatchS
         <Icon name={completed ? 'check' : 'code'} size={15} style={{ color: statusColor }} />
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontWeight: 750, fontSize: 14, color: 'var(--text)' }}>
-            {completed ? 'Result ready' : 'Result in progress'}
+            {completed ? 'Delivery ready' : 'Delivery in progress'}
           </div>
           <div className="mono" style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 2 }}>
-            {artifacts.length} artifacts · {codeCount} code · {reviewCount} review · adapter={dispatchAdapter || 'local-dispatch'} · next={dispatchStage || 'done'}
+            {artifacts.length} artifacts · {codeCount} code · {reviewCount} review · confidence={confidence} · tests={mission?.finalDelivery?.testsObserved ? 'observed' : 'missing'} · risks={riskCount} · delivery={reportReady ? mission.finalDelivery.recommendation : 'not_ready'} · adapter={dispatchAdapter || 'local-dispatch'} · next={dispatchStage || 'done'}
           </div>
         </div>
         <span style={{ fontSize: 11.5, color: statusColor, padding: '3px 8px', borderRadius: 999,
@@ -575,6 +645,36 @@ function LocalResultCard({ artifacts, dispatchStatus, dispatchAdapter, dispatchS
           {dispatchStatus || 'not_started'}
         </span>
       </div>
+      {reportReady && onDecideDelivery && (
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '10px 14px',
+          borderBottom: '1px solid var(--border)', background: 'var(--surface-2)', flexWrap: 'wrap' }}>
+          <span style={{ flex: 1, minWidth: 180, fontSize: 12.5, color: 'var(--text-muted)' }}>
+            Delivery is ready for acceptance.
+          </span>
+          <button onClick={() => onDecideDelivery('repair')} style={{ display: 'inline-flex', alignItems: 'center', gap: 6,
+            padding: '7px 11px', borderRadius: 'var(--r-sm)', border: '1px solid var(--border)', background: 'var(--surface)',
+            color: 'var(--text-muted)', cursor: 'pointer', font: 'inherit', fontSize: 12.5, fontWeight: 700 }}>
+            <Icon name="wrench" size={13} /> Request repair
+          </button>
+          <button onClick={() => onDecideDelivery('tests')} style={{ display: 'inline-flex', alignItems: 'center', gap: 6,
+            padding: '7px 11px', borderRadius: 'var(--r-sm)', border: '1px solid var(--border)', background: 'var(--surface)',
+            color: 'var(--text-muted)', cursor: 'pointer', font: 'inherit', fontSize: 12.5, fontWeight: 700 }}>
+            <Icon name="eye" size={13} /> Request tests
+          </button>
+          <button onClick={() => onDecideDelivery('accept')} style={{ display: 'inline-flex', alignItems: 'center', gap: 6,
+            padding: '7px 11px', borderRadius: 'var(--r-sm)', border: 'none', background: 'var(--ok)',
+            color: '#fff', cursor: 'pointer', font: 'inherit', fontSize: 12.5, fontWeight: 700 }}>
+            <Icon name="check" size={13} /> Accept delivery
+          </button>
+        </div>
+      )}
+      {(accepted || rejected) && (
+        <div style={{ padding: '9px 14px', borderBottom: '1px solid var(--border)',
+          background: alpha(accepted ? 'var(--ok)' : 'var(--warn)', 10), color: accepted ? 'var(--ok)' : 'var(--warn)',
+          fontSize: 12.5, fontWeight: 750 }}>
+          {accepted ? 'Final delivery accepted.' : 'Repair requested for final delivery.'}
+        </div>
+      )}
       {previewArtifact && (
         <div style={{ background: 'var(--surface-3)', padding: 12 }}>
           <div style={{ borderRadius: 'var(--r-sm)', overflow: 'hidden', border: '1px solid var(--border)',

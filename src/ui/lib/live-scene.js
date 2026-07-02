@@ -7,7 +7,6 @@
    source of truth.
    ============================================================================ */
 
-import { RT } from './rt';
 import { agentForArtifact } from './agent-utils';
 
 function latestLiveTurn(liveTurns) {
