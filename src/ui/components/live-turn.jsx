@@ -24,11 +24,22 @@ function UserMsg({ text }) {
   );
 }
 
+function AssistantNote({ text }) {
+  return (
+    <div className="rt-rise" style={{ display: 'flex', gap: 11, alignItems: 'flex-start' }}>
+      <Avatar agent={{ id: 'orchestrator', displayName: 'Roundtable', color: 'var(--pm)' }} size={28} ring={false} />
+      <div style={{ maxWidth: '78%', padding: '10px 13px', borderRadius: '12px 12px 12px 4px',
+        background: 'var(--surface-2)', border: '1px solid var(--border)', color: 'var(--text-muted)',
+        fontSize: 13, lineHeight: 1.45 }}>{text}</div>
+    </div>
+  );
+}
+
 function LocalLiveThread({ turns, agents, turnActions }) {
   const ref = useRef(null);
   useEffect(() => {
     if (ref.current) ref.current.scrollTop = 0;
-  }, [turns?.[0]?.id, turns?.[0]?.result?.dispatchStatus, turns?.[0]?.result?.artifacts?.length]);
+  }, [turns?.[0]?.id, turns?.[0]?.result?.dispatchStatus, turns?.[0]?.result?.artifacts?.length, turns?.[0]?.followUps?.length]);
 
   if (!turns || turns.length === 0) {
     return (
@@ -289,6 +300,12 @@ function LocalLiveTurn({ turn, agents, turnActions, showPreview }) {
           )}
         </div>
       </div>
+      {(turn.followUps || []).map((message) => (
+        <React.Fragment key={message.id}>
+          <UserMsg text={message.content} />
+          <AssistantNote text="Added to this Mission thread. Start a new Mission from the sidebar when you want a separate run." />
+        </React.Fragment>
+      ))}
     </>
   );
 }
