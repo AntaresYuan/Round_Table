@@ -797,7 +797,12 @@ function App() {
       )));
       setLocalStatus('idle');
     } catch (error) {
-      const messageText = error instanceof Error ? error.message : 'edit_failed';
+      const raw = error instanceof Error ? error.message : 'edit_failed';
+      const messageText = raw === 'artifact_not_ready'
+        ? 'No visible delivery artifact exists yet, so there is nothing to edit.'
+        : raw === 'edit_not_understood'
+          ? 'I could not apply that as an edit. Tell me the concrete change, like "change the color to green".'
+          : raw;
       upsertFollowUp((items) => items.map((item) =>
         item.id === note.id ? { ...item, status: 'error', error: messageText } : item
       ));

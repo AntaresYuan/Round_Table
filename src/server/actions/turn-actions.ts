@@ -733,9 +733,12 @@ export async function editTurnDelivery(input: FollowUpEditInput): Promise<Dispat
   const turn = await getTurn(input.turnId);
   if (!turn) throw new ActionError('turn_not_found', 404);
   if (turn.dispatchStatus !== 'completed') throw new ActionError('delivery_not_ready', 400);
-  const target = turn.artifacts.find((artifact) => artifact.kind === 'preview' && artifact.preview)
-    ?? turn.artifacts.find((artifact) => artifact.kind === 'html' && artifact.preview)
-    ?? turn.artifacts.find((artifact) => artifact.kind === 'code' && artifact.preview);
+  if (!isSupportedEditInstruction(instruction)) throw new ActionError('edit_not_understood', 400);
+  const target = turn.artifacts.find((artifact) =>
+    (artifact.kind === 'preview' || artifact.kind === 'html')
+    && artifact.preview
+    && /<html|<body|<!doctype/i.test(artifact.preview),
+  );
   if (!target?.preview) throw new ActionError('artifact_not_ready', 400);
   const now = nowIso();
   const edited = editArtifactPreview(target.preview, instruction);
@@ -1337,6 +1340,11 @@ function editArtifactPreview(source: string, instruction: string): string {
     return applyPalette(source, instruction);
   }
   return injectEditBanner(source, instruction);
+}
+
+function isSupportedEditInstruction(instruction: string): boolean {
+  return /\b(color|colour|palette)\b|颜色|配色|换色|改色/i.test(instruction)
+    || /\b(copy|text|label|title|headline)\b|文案|标题|改字|文字/i.test(instruction);
 }
 
 function applyPalette(source: string, instruction: string): string {

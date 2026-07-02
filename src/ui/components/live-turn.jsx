@@ -641,6 +641,7 @@ function ExpandableArtifact({ artifact, owner }) {
 
 function LocalResultCard({ artifacts, dispatchStatus, dispatchAdapter, dispatchStage, workspacePath, previewArtifact, agents, mission, onDecideDelivery }) {
   const completed = dispatchStatus === 'completed';
+  const hasVisibleDelivery = !!previewArtifact?.preview;
   const codeCount = artifacts.filter((artifact) => artifact.kind === 'code').length;
   const reviewCount = artifacts.filter((artifact) => artifact.ownerAgentId === 'reviewer').length;
   const reportReady = mission?.finalDelivery?.status === 'ready';
@@ -668,7 +669,7 @@ function LocalResultCard({ artifacts, dispatchStatus, dispatchAdapter, dispatchS
           {dispatchStatus || 'not_started'}
         </span>
       </div>
-      {reportReady && onDecideDelivery && (
+      {reportReady && hasVisibleDelivery && onDecideDelivery && (
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '10px 14px',
           borderBottom: '1px solid var(--border)', background: 'var(--surface-2)', flexWrap: 'wrap' }}>
           <span style={{ flex: 1, minWidth: 180, fontSize: 12.5, color: 'var(--text-muted)' }}>
@@ -689,6 +690,12 @@ function LocalResultCard({ artifacts, dispatchStatus, dispatchAdapter, dispatchS
             color: '#fff', cursor: 'pointer', font: 'inherit', fontSize: 12.5, fontWeight: 700 }}>
             <Icon name="check" size={13} /> Accept delivery
           </button>
+        </div>
+      )}
+      {reportReady && !hasVisibleDelivery && (
+        <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--border)',
+          background: alpha('var(--warn)', 10), color: 'var(--warn)', fontSize: 12.5, fontWeight: 750 }}>
+          No visible delivery artifact is available yet.
         </div>
       )}
       {(accepted || rejected) && (
