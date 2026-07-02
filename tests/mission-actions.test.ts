@@ -179,4 +179,39 @@ describe('Mission P0 migration', () => {
     expect(after?.preview).toContain('data-roundtable-edit="palette-teal"');
     expect(edited.records.some((record) => record.taskId.startsWith(`edit_${turn.id}`))).toBe(true);
   });
+
+  it('does not pretend vague complaints are artifact edits', async () => {
+    const turn = await createTurn({
+      actor,
+      chatId: 'checkout-complaint-chat',
+      message: 'Implement a checkout flow with cart summary, payment handoff, validation, and post-payment confirmation.',
+    });
+    await approveTurn({
+      turnId: turn.id,
+      decision: 'approve',
+      autoDispatch: true,
+      agentAdapter: 'local-dispatch',
+    });
+
+    await expect(editTurnDelivery({ turnId: turn.id, instruction: '啥也没有，你啥也没给我产出' }))
+      .rejects.toThrow('edit_not_understood');
+  });
+
+  it('does not edit reports or code when no visible delivery artifact exists', async () => {
+    const turn = await createTurn({
+      actor,
+      chatId: 'api-edit-chat',
+      message: 'Build an API endpoint for user login and review it.',
+    });
+    const result = await approveTurn({
+      turnId: turn.id,
+      decision: 'approve',
+      autoDispatch: true,
+      agentAdapter: 'local-dispatch',
+    });
+
+    expect(result.artifacts.some((artifact) => artifact.kind === 'preview')).toBe(false);
+    await expect(editTurnDelivery({ turnId: turn.id, instruction: '换个颜色' }))
+      .rejects.toThrow('artifact_not_ready');
+  });
 });

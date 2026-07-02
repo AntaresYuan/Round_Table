@@ -31,6 +31,7 @@ function knownClientError(message: string): boolean {
     'turn_not_found',
     'delivery_not_ready',
     'artifact_not_ready',
+    'edit_not_understood',
     'unauthorized',
   ].includes(message);
 }
