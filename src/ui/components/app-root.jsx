@@ -762,6 +762,26 @@ function App() {
     loadLocalHistory();
   }, [authStatus, loadLocalHistory]);
 
+  // Deleting a session removes the turn AND its workspace code on disk (the
+  // backend keeps workbench-linked project dirs safe — runs/ output only), so
+  // ask before doing something that can't be undone.
+  const deleteLocalTurn = useCallback(async (turnId) => {
+    const sure = window.confirm('Delete this session? Its generated workspace code is deleted with it.');
+    if (!sure) return;
+    try {
+      await fetch('/api/orchestrator/turn/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ turnId }),
+      });
+    } catch {
+      // Best-effort: reload below reflects whatever actually happened.
+    }
+    setLocalTurns((turns) => turns.filter((turn) => turn.id !== turnId));
+    setSelectedLocalTurnId((current) => (current === turnId ? null : current));
+    loadLocalHistory();
+  }, [loadLocalHistory]);
+
   // Dispatch runs in the background on the server (fire-and-forget), so while a
   // turn's dispatch is 'running' we poll history to fill in artifacts as they
   // land — instead of holding a multi-minute request open and timing out.
@@ -1066,7 +1086,13 @@ function App() {
           memberIds={memberIds} onRemoveMember={(id) => setMemberIds((m) => m.filter((x) => x !== id))}
           onAddMember={() => setModal('agent')} onNewTask={() => setModal('task')} onNewWorkbench={() => setModal('table')}
           onPickWorkbench={pickWorkbench} onCollapse={() => setRailOpen(false)}
-          onDelete={authed ? (id) => { deleteChat.mutate({ id }); if (id === selectedChatId) setSelectedChatId(null); } : undefined} />}
+          onDelete={authed
+            ? (id) => {
+                if (!window.confirm('Delete this session? Its generated workspace code is deleted with it.')) return;
+                deleteChat.mutate({ id });
+                if (id === selectedChatId) setSelectedChatId(null);
+              }
+            : deleteLocalTurn} />}
         {railOpen && compact && (
           <div style={{ position: 'fixed', inset: 0, zIndex: 110, background: alpha('#000', 30), display: 'flex' }}
             onClick={() => setRailOpen(false)}>
@@ -1076,7 +1102,13 @@ function App() {
                 memberIds={memberIds} onRemoveMember={(id) => setMemberIds((m) => m.filter((x) => x !== id))}
                 onAddMember={() => setModal('agent')} onNewTask={() => setModal('task')} onNewWorkbench={() => setModal('table')}
                 onPickWorkbench={pickWorkbench} onCollapse={() => setRailOpen(false)}
-                onDelete={authed ? (id) => { deleteChat.mutate({ id }); if (id === selectedChatId) setSelectedChatId(null); } : undefined} />
+                onDelete={authed
+            ? (id) => {
+                if (!window.confirm('Delete this session? Its generated workspace code is deleted with it.')) return;
+                deleteChat.mutate({ id });
+                if (id === selectedChatId) setSelectedChatId(null);
+              }
+            : deleteLocalTurn} />
             </div>
           </div>
         )}

@@ -39,6 +39,7 @@ import {
   type TaskResult,
 } from './scheduler.js';
 import { describeFindings, hasBlockingFinding, safetyEnabled, scanArtifact, type SafetyFinding } from './safety.js';
+import { removeWorkspace } from './workspace-cleanup.js';
 import { AGENT_ROSTER, mentionedAgents, mentionTokens, messageWithoutMentions, type AgentProfile } from './agent-roster.js';
 
 export type CreateTurnInput = {
@@ -752,6 +753,31 @@ export async function interruptTurn(turnId: string, access?: TurnAccess | undefi
     workflowRun: workflowRunForTurn({ ...current, mission: mission ?? current.mission }),
   }), access);
   return dispatchResponse(requireTurn(synced));
+}
+
+// Delete a session: the turn, its mission, its turn-scoped artifacts/handoffs,
+// AND its workspace on disk. Managed workspaces (under ROUNDTABLE_WORKSPACE_ROOT)
+// are removed entirely; a workbench-linked project directory only loses our
+// .roundtable/runs output — never the user's own files (see workspace-cleanup).
+export async function deleteTurn(turnId: string, access?: TurnAccess | undefined): Promise<{ id: string }> {
+  const turn = await getTurn(turnId, access);
+  if (!turn) throw new ActionError('turn_not_found', 404);
+  await mutateData((data) => {
+    data.turns = data.turns.filter((item) => item.id !== turnId);
+    data.missions = data.missions.filter((mission) => mission.sourceTurnId !== turnId);
+    // Turn-scoped artifacts carry ids of the form `${taskId}_${turnId}`; the
+    // local (chat-less) flow also parents them under the synthetic chat id.
+    data.artifacts = data.artifacts.filter((artifact) =>
+      !artifact.id.endsWith(`_${turnId}`) && artifact.chatId !== `local-${turnId}`,
+    );
+    data.handoffs = data.handoffs.filter((handoff) =>
+      handoff.card?.missionId !== turn.missionId && handoff.chatId !== `local-${turnId}`,
+    );
+  });
+  // Files go after the store commit so a failed deletion never leaves a
+  // half-deleted session pointing at a vanished workspace.
+  await removeWorkspace(turn.dispatchWorkspacePath);
+  return { id: turnId };
 }
 
 export async function decideTurnFinalDelivery(input: FinalDeliveryInput): Promise<DispatchResponse> {
