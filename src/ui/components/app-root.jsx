@@ -86,12 +86,14 @@ function useScene(autoplay, speed) {
 /* ---- turn → sidebar task summary ----------------------------------------- */
 function turnToTask(turn) {
   const title = turn.message.length > 40 ? turn.message.slice(0, 40) + '...' : turn.message;
+  const followCount = turn.followUps?.length || 0;
   if (turn.status === 'error') {
     return { id: turn.id, title, meta: turn.error || 'failed', status: 'queued' };
   }
   const count = turn.result?.plan?.tasks?.length || turn.plan?.tasks?.length || 0;
   const dispatchStatus = turn.result?.dispatchStatus || turn.dispatchStatus;
   const artifactCount = turn.result?.artifacts?.length || turn.artifacts?.length || 0;
+  const suffix = followCount ? ` · ${followCount} messages` : '';
   const meta = dispatchStatus === 'completed'
     ? `${artifactCount} artifacts · result ready`
     : dispatchStatus === 'failed'
@@ -109,7 +111,7 @@ function turnToTask(turn) {
   return {
     id: turn.id,
     title,
-    meta,
+    meta: `${meta}${suffix}`,
     status,
   };
 }
@@ -118,6 +120,7 @@ function storedTurnToLiveTurn(turn) {
   return {
     id: turn.id,
     message: turn.message,
+    followUps: turn.followUps || [],
     status: turn.status,
     createdAt: turn.createdAt,
     ...(turn.status === 'done'
@@ -439,6 +442,7 @@ function App() {
     if (restored.length) setMemberIds((m) => [...m, ...restored.filter((id) => !m.includes(id))]);
   }, []);
   const [localTurns, setLocalTurns] = useState([]);
+  const [localFollowUps, setLocalFollowUps] = useState({});
   const [localStatus, setLocalStatus] = useState('idle');
   // Persisted so a page refresh restores this chat's live turns from history
   // instead of starting an empty session. Some embedded browsers can deny
@@ -622,7 +626,13 @@ function App() {
         const fallbackData = await fallbackRes.json();
         if (fallbackRes.ok && fallbackData.ok) storedTurns = fallbackData.turns || [];
       }
-      const turns = storedTurns.map(storedTurnToLiveTurn);
+      const turns = storedTurns.map((turn) => {
+        const liveTurn = storedTurnToLiveTurn(turn);
+        return {
+          ...liveTurn,
+          followUps: localFollowUps[liveTurn.id] || liveTurn.followUps || [],
+        };
+      });
       setLocalTurns(turns);
       setSelectedLocalTurnId((current) => (
         current && turns.some((turn) => turn.id === current)
@@ -632,7 +642,7 @@ function App() {
     } catch {
       // Local history is a dev convenience; a fresh turn should still work.
     }
-  }, [authed, turnChatId]);
+  }, [authed, localFollowUps, turnChatId]);
 
   useEffect(() => {
     if (authStatus === 'loading') return;
@@ -727,6 +737,29 @@ function App() {
       )));
       setLocalStatus('error');
     }
+  };
+  const appendLocalMessage = (message, turnId = activeLocalTurn?.id) => {
+    if (!turnId) {
+      sendLocalTurn(message);
+      return;
+    }
+    const note = {
+      id: `follow-${Date.now()}`,
+      content: message,
+      createdAt: new Date().toISOString(),
+    };
+    setInspectorTab('chat');
+    setNotesOpen(true);
+    setSelectedLocalTurnId(turnId);
+    setLocalFollowUps((current) => ({
+      ...current,
+      [turnId]: [...(current[turnId] || []), note],
+    }));
+    setLocalTurns((turns) => turns.map((turn) => (
+      turn.id === turnId
+        ? { ...turn, followUps: [...(turn.followUps || []), note] }
+        : turn
+    )));
   };
   // The planner parked this turn with clarifying questions; send the user's
   // picks to get a real plan. We DON'T auto-dispatch — the plan now waits for
@@ -919,18 +952,20 @@ function App() {
     if (authed) {
       if (activeChatId) {
         createMessage.mutate({ chatId: activeChatId, content: message });
-        sendLocalTurn(message, undefined, activeChatId, workflowTemplateId);
       } else {
         const workbench = await ensureWorkbench();
         const chat = await createChat.mutateAsync({ title: message.slice(0, 160), workbenchId: workbench.id });
         if (chat) {
           await createMessage.mutateAsync({ chatId: chat.id, content: message });
-          sendLocalTurn(message, undefined, chat.id, workflowTemplateId);
         }
       }
       return;
     }
-    sendLocalTurn(message, undefined, undefined, workflowTemplateId);
+    if (workflowTemplateId || !activeLocalTurn) {
+      sendLocalTurn(message, undefined, undefined, workflowTemplateId);
+      return;
+    }
+    appendLocalMessage(message);
   };
   const breakoutData = RT.SCRIPT.find((b) => b.kind === 'breakout');
 
