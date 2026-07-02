@@ -6,6 +6,7 @@ import { createChat, createMessage, deleteChat } from '../src/server/actions/cha
 import { normalizeAdapter } from '../src/server/actions/agent-runner.js';
 import { listMissions, rejectHandoff } from '../src/server/actions/mission-actions.js';
 import { listHandoffsByChat } from '../src/server/actions/read-actions.js';
+import { saveAgentRuntimeConfig } from '../src/server/actions/runtime-actions.js';
 import { answerClarification, approveTurn, createTurn, listTurns, reviewSeverities } from '../src/server/actions/turn-actions.js';
 import { createWorkbench } from '../src/server/actions/workbench-actions.js';
 import { resetData } from '../src/server/store.js';
@@ -34,8 +35,6 @@ afterEach(async () => {
   delete process.env.ROUNDTABLE_DATA_PATH;
   delete process.env.ROUNDTABLE_WORKSPACE_ROOT;
   delete process.env.ROUNDTABLE_AGENT_ADAPTER;
-  delete process.env.ROUNDTABLE_AGENT_COMMAND;
-  delete process.env.ROUNDTABLE_AGENT_ARGS;
   delete process.env.ROUNDTABLE_ENABLE_EXTERNAL_AGENT;
   delete process.env.ROUNDTABLE_ALLOW_CLAUDE_CLI;
   delete process.env.ROUNDTABLE_CLARIFY_ENABLED;
@@ -235,9 +234,9 @@ describe('Roundtable clean workflow', () => {
   });
 
   it('can dispatch through an explicitly enabled external CLI command adapter', async () => {
-    process.env.ROUNDTABLE_ENABLE_EXTERNAL_AGENT = '1';
-    process.env.ROUNDTABLE_AGENT_COMMAND = 'printf';
-    process.env.ROUNDTABLE_AGENT_ARGS = '{prompt}';
+    await configureRuntimeOutput('orchestrator', 'external planner output');
+    await configureRuntimeOutput('atlas', 'external implementer output');
+    await configureRuntimeOutput('vera', 'external reviewer output');
 
     const workbench = await createWorkbench(actor, {
       name: 'External adapter test',
@@ -265,3 +264,12 @@ describe('Roundtable clean workflow', () => {
     expect(approval.records.every((record) => record.events.some((event) => event.type === 'tool_use'))).toBe(true);
   });
 });
+
+async function configureRuntimeOutput(agentId: string, text: string): Promise<void> {
+  await saveAgentRuntimeConfig({
+    agentId,
+    runtime: 'custom-cli',
+    command: process.execPath,
+    args: ['-e', `process.stdout.write(${JSON.stringify(text)})`],
+  });
+}

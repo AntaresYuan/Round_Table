@@ -1,0 +1,437 @@
+import { access } from 'node:fs/promises';
+import { delimiter, join } from 'node:path';
+import { id, mutateData, nowIso, readData } from '../store.js';
+import type {
+  AgentEvent,
+  AgentRuntimeConfig,
+  AgentRuntimeConversation,
+  AgentRuntimeDefaultConfig,
+  AgentRuntimeKind,
+  Actor,
+} from '../types.js';
+import { AGENT_ROSTER, type AgentProfile } from './agent-roster.js';
+import {
+  configuredRuntimeForAgent,
+  mergedRuntimeConfigForAgent,
+  normalizeRuntimeKind,
+  RUNTIME_DEFINITIONS,
+  runtimeConfigForAgent,
+  runtimeDefaultConfigForKind,
+  runtimeDefinition,
+} from './cli-runtimes/registry.js';
+import {
+  executeCliRuntime,
+  stopActiveRuntimeConversation,
+  type RuntimeExecutionCallbacks,
+  type RuntimeTranscriptEntry,
+} from './cli-runtimes/runner.js';
+
+export type RuntimeState = {
+  executionAdapter: string;
+  executionAdapterSource: 'settings' | 'env' | 'built-in';
+  supported: Array<{
+    kind: AgentRuntimeKind;
+    label: string;
+    description: string;
+    binary: string | null;
+    installHint: string | null;
+    command: string | null;
+    args: string[];
+    model: string | null;
+    configured: boolean;
+    configuredEnvKeys: string[];
+    requiredEnvKeys: string[];
+    ready: boolean;
+    readyReason: string | null;
+  }>;
+  agents: Array<{
+    id: string;
+    name: string;
+    role: string;
+    runtime: AgentRuntimeKind;
+    command: string | null;
+    args: string[];
+    model: string | null;
+    configured: boolean;
+  }>;
+  conversations: AgentRuntimeConversation[];
+};
+
+export async function listRuntimeState(): Promise<RuntimeState> {
+  const data = await readData();
+  const execution = effectiveExecutionAdapter(data.settings.defaultAgentAdapter);
+  const supported = await Promise.all(RUNTIME_DEFINITIONS.map(async (definition) => {
+    const defaultConfig = runtimeDefaultConfigForKind(definition.kind, data.agentRuntimeDefaults);
+    const readiness = await runtimeReadiness(definition.kind, defaultConfig);
+    return {
+      kind: definition.kind,
+      label: definition.label,
+      description: definition.description,
+      binary: definition.binary,
+      installHint: definition.installHint,
+      command: defaultConfig?.command ?? null,
+      args: defaultConfig?.args ?? [],
+      model: defaultConfig?.model ?? null,
+      configured: defaultConfig !== null,
+      configuredEnvKeys: Object.keys(defaultConfig?.env ?? {}).sort(),
+      requiredEnvKeys: definition.envKeys,
+      ready: readiness.ready,
+      readyReason: readiness.reason,
+    };
+  }));
+  const agents = AGENT_ROSTER.map((agent) => {
+    const config = runtimeConfigForAgent(agent, data.agentRuntimeConfigs);
+    return {
+      id: agent.id,
+      name: agent.displayName,
+      role: agent.role,
+      runtime: config?.runtime ?? configuredRuntimeForAgent(agent, data.agentRuntimeConfigs),
+      command: config?.command ?? null,
+      args: config?.args ?? [],
+      model: config?.model ?? null,
+      configured: config !== null,
+    };
+  });
+  return {
+    executionAdapter: execution.value,
+    executionAdapterSource: execution.source,
+    supported,
+    agents,
+    conversations: [...data.agentRuntimeConversations]
+      .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
+      .slice(0, 80),
+  };
+}
+
+export async function saveAgentRuntimeConfig(input: {
+  agentId: string;
+  runtime: string;
+  command?: string | null | undefined;
+  args?: string[] | undefined;
+  env?: Record<string, string> | undefined;
+  model?: string | null | undefined;
+  actor?: Actor | null | undefined;
+}): Promise<AgentRuntimeConfig> {
+  const agent = agentById(input.agentId);
+  const runtime = normalizeRuntimeKind(input.runtime);
+  if (!agent) throw new RuntimeActionError('agent_not_found', 404);
+  if (!runtime) throw new RuntimeActionError('runtime_not_supported', 400);
+  const config: AgentRuntimeConfig = {
+    agentId: agent.id,
+    runtime,
+    command: clean(input.command) ?? null,
+    args: input.args?.map((arg) => arg.trim()).filter(Boolean) ?? [],
+    env: sanitizeEnv(input.env ?? {}),
+    model: clean(input.model) ?? null,
+    updatedAt: nowIso(),
+  };
+  await mutateData((data) => {
+    data.agentRuntimeConfigs = [
+      config,
+      ...data.agentRuntimeConfigs.filter((item) => item.agentId !== config.agentId),
+    ];
+  });
+  return config;
+}
+
+export async function saveRuntimeDefaultConfig(input: {
+  runtime: string;
+  command?: string | null | undefined;
+  args?: string[] | undefined;
+  env?: Record<string, string> | undefined;
+  clearEnv?: boolean | undefined;
+  model?: string | null | undefined;
+  actor?: Actor | null | undefined;
+}): Promise<AgentRuntimeDefaultConfig> {
+  const runtime = normalizeRuntimeKind(input.runtime);
+  if (!runtime) throw new RuntimeActionError('runtime_not_supported', 400);
+  let saved: AgentRuntimeDefaultConfig | null = null;
+  await mutateData((data) => {
+    const existing = runtimeDefaultConfigForKind(runtime, data.agentRuntimeDefaults);
+    const env = input.clearEnv
+      ? {}
+      : input.env === undefined
+        ? existing?.env ?? {}
+        : sanitizeEnv(input.env);
+    saved = {
+      runtime,
+      command: clean(input.command) ?? null,
+      args: input.args?.map((arg) => arg.trim()).filter(Boolean) ?? [],
+      env,
+      model: clean(input.model) ?? null,
+      updatedAt: nowIso(),
+    };
+    data.agentRuntimeDefaults = [
+      saved,
+      ...data.agentRuntimeDefaults.filter((item) => item.runtime !== runtime),
+    ];
+  });
+  if (!saved) throw new RuntimeActionError('runtime_default_not_saved', 500);
+  return saved;
+}
+
+export async function createRuntimeConversation(input: {
+  agent: AgentProfile;
+  runtime: AgentRuntimeKind;
+  title: string;
+  workspacePath: string;
+  turnId?: string | null | undefined;
+  taskId?: string | null | undefined;
+}): Promise<AgentRuntimeConversation> {
+  const now = nowIso();
+  const conversation: AgentRuntimeConversation = {
+    id: id('runtime'),
+    agentId: input.agent.id,
+    role: input.agent.role,
+    runtime: input.runtime,
+    title: input.title,
+    turnId: input.turnId ?? null,
+    taskId: input.taskId ?? null,
+    workspacePath: input.workspacePath,
+    cwd: input.workspacePath,
+    command: 'starting',
+    pid: null,
+    status: 'running',
+    startedAt: now,
+    updatedAt: now,
+    finishedAt: null,
+    events: [],
+    transcript: [],
+    error: null,
+  };
+  await mutateData((data) => {
+    data.agentRuntimeConversations = [conversation, ...data.agentRuntimeConversations].slice(0, 200);
+  });
+  return conversation;
+}
+
+export function runtimeConversationCallbacks(conversationId: string): RuntimeExecutionCallbacks {
+  return {
+    onCommand: (command, pid) => updateRuntimeConversation(conversationId, {
+      command,
+      pid,
+      updatedAt: nowIso(),
+    }),
+    onEvent: (event, transcript) => appendRuntimeConversationEvent(conversationId, event, transcript),
+  };
+}
+
+export async function finishRuntimeConversation(
+  conversationId: string,
+  status: 'completed' | 'failed' | 'stopped',
+  error: string | null,
+): Promise<void> {
+  const now = nowIso();
+  await updateRuntimeConversation(conversationId, {
+    status,
+    error,
+    updatedAt: now,
+    finishedAt: now,
+  });
+}
+
+export async function stopRuntimeConversation(conversationId: string): Promise<AgentRuntimeConversation | null> {
+  const stopped = stopActiveRuntimeConversation(conversationId);
+  const now = nowIso();
+  let updated: AgentRuntimeConversation | null = null;
+  await mutateData((data) => {
+    data.agentRuntimeConversations = data.agentRuntimeConversations.map((conversation) => {
+      if (conversation.id !== conversationId) return conversation;
+      updated = {
+        ...conversation,
+        status: conversation.status === 'running' ? 'stopped' : conversation.status,
+        error: stopped ? 'stopped_by_user' : conversation.error,
+        updatedAt: now,
+        finishedAt: conversation.finishedAt ?? now,
+      };
+      return updated;
+    });
+  });
+  return updated;
+}
+
+export async function startDirectRuntimeConversation(input: {
+  agentId: string;
+  message: string;
+  workspacePath?: string | undefined;
+}): Promise<AgentRuntimeConversation> {
+  const agent = agentById(input.agentId);
+  if (!agent) throw new RuntimeActionError('agent_not_found', 404);
+  const data = await readData();
+  const runtime = configuredRuntimeForAgent(agent, data.agentRuntimeConfigs);
+  if (runtime === 'local-dispatch') throw new RuntimeActionError('local_runtime_not_directly_runnable', 400);
+  const config = mergedRuntimeConfigForAgent(
+    agent,
+    runtime,
+    data.agentRuntimeConfigs,
+    data.agentRuntimeDefaults,
+  );
+  const workspace = input.workspacePath?.trim() || process.cwd();
+  const conversation = await createRuntimeConversation({
+    agent,
+    runtime,
+    title: input.message.slice(0, 80) || `Direct message to ${agent.displayName}`,
+    workspacePath: workspace,
+  });
+  const prompt = [
+    'You are running as a Roundtable CLI-backed agent outside a workflow.',
+    `Agent: ${agent.displayName} (${agent.id})`,
+    `Role: ${agent.role}`,
+    'Treat the user message as a direct terminal/chat instruction.',
+    'Work in the current working directory and summarize what you did.',
+    '',
+    `User message:\n${input.message}`,
+  ].join('\n\n');
+
+  void executeCliRuntime({
+    conversationId: conversation.id,
+    runtime,
+    agent,
+    config,
+    workspace,
+    prompt,
+    timeoutMs: runtimeTimeoutMs(),
+    callbacks: runtimeConversationCallbacks(conversation.id),
+  }).then((result) => (
+    finishRuntimeConversation(conversation.id, result.ok ? 'completed' : 'failed', result.error)
+  )).catch((error: unknown) => (
+    finishRuntimeConversation(conversation.id, 'failed', error instanceof Error ? error.message : String(error))
+  ));
+
+  return conversation;
+}
+
+export class RuntimeActionError extends Error {
+  constructor(readonly code: string, readonly status = 400) {
+    super(code);
+  }
+}
+
+async function appendRuntimeConversationEvent(
+  conversationId: string,
+  event: AgentEvent,
+  transcript?: RuntimeTranscriptEntry | undefined,
+): Promise<void> {
+  const now = nowIso();
+  await mutateData((data) => {
+    data.agentRuntimeConversations = data.agentRuntimeConversations.map((conversation) => {
+      if (conversation.id !== conversationId) return conversation;
+      return {
+        ...conversation,
+        events: [...conversation.events, event].slice(-400),
+        transcript: transcript
+          ? [...conversation.transcript, { at: now, ...transcript }].slice(-200)
+          : conversation.transcript,
+        updatedAt: now,
+      };
+    });
+  });
+}
+
+async function updateRuntimeConversation(
+  conversationId: string,
+  patch: Partial<AgentRuntimeConversation>,
+): Promise<void> {
+  await mutateData((data) => {
+    data.agentRuntimeConversations = data.agentRuntimeConversations.map((conversation) =>
+      conversation.id === conversationId ? { ...conversation, ...patch } : conversation,
+    );
+  });
+}
+
+function agentById(agentId: string): AgentProfile | null {
+  return AGENT_ROSTER.find((agent) => agent.id === agentId) ?? null;
+}
+
+function clean(value: string | null | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function effectiveExecutionAdapter(
+  saved: string | null | undefined,
+): { value: string; source: 'settings' | 'env' | 'built-in' } {
+  const fromSettings = normalizeExecutionAdapter(saved);
+  if (fromSettings) return { value: fromSettings, source: 'settings' };
+  const fromEnv = normalizeExecutionAdapter(process.env.ROUNDTABLE_AGENT_ADAPTER);
+  if (fromEnv) return { value: fromEnv, source: 'env' };
+  return { value: 'local-dispatch', source: 'built-in' };
+}
+
+function normalizeExecutionAdapter(value: string | null | undefined): string | null {
+  const raw = clean(value)?.toLowerCase();
+  if (!raw) return null;
+  if (raw === 'minimax') return 'minimax';
+  if (raw === 'openai-compat' || raw === 'openai' || raw === 'deepseek') return 'openai-compat';
+  if (raw === 'agent-cli' || raw === 'external-cli' || raw === 'cli-runtime' || raw === 'runtime' || raw === 'cli') return 'agent-cli';
+  if (raw === 'e2b') return 'e2b';
+  if (raw === 'local' || raw === 'local-dispatch') return 'local-dispatch';
+  return raw;
+}
+
+function sanitizeEnv(env: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    const normalized = key.trim();
+    if (!/^[A-Z_][A-Z0-9_]*$/.test(normalized)) continue;
+    if (!value.trim()) continue;
+    out[normalized] = value.trim();
+  }
+  return out;
+}
+
+async function runtimeReadiness(
+  kind: AgentRuntimeKind,
+  defaultConfig: AgentRuntimeDefaultConfig | null = null,
+): Promise<{ ready: boolean; reason: string | null }> {
+  const definition = runtimeDefinition(kind);
+  if (kind === 'local-dispatch') return { ready: true, reason: null };
+
+  const command = defaultConfig?.command
+    || process.env[`ROUNDTABLE_${kind.replace(/[^a-zA-Z0-9]+/g, '_').toUpperCase()}_COMMAND`]
+    || (kind === 'custom-cli' ? process.env.ROUNDTABLE_AGENT_COMMAND : undefined)
+    || definition.binary;
+  if (!command) {
+    return { ready: false, reason: definition.installHint ?? 'Set a runtime command.' };
+  }
+
+  const commandFound = await commandAvailable(command);
+  if (!commandFound) return { ready: false, reason: `Missing command: ${command}` };
+
+  const env = { ...process.env, ...(defaultConfig?.env ?? {}) };
+  const hasEnv = definition.envKeys.length === 0 || definition.envKeys.some((key) => Boolean(env[key]));
+  if (!hasEnv && kind !== 'codex' && kind !== 'claude-code') {
+    return { ready: false, reason: `Missing env: ${definition.envKeys.join(' or ')}` };
+  }
+  return { ready: true, reason: null };
+}
+
+async function commandAvailable(command: string): Promise<boolean> {
+  if (command.includes('/')) {
+    try {
+      await access(command);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  return binaryOnPath(command);
+}
+
+async function binaryOnPath(binary: string): Promise<boolean> {
+  const pathValue = process.env.PATH || '';
+  for (const dir of pathValue.split(delimiter).filter(Boolean)) {
+    try {
+      await access(join(dir, binary));
+      return true;
+    } catch {
+      // keep looking
+    }
+  }
+  return false;
+}
+
+function runtimeTimeoutMs(): number {
+  const parsed = Number(process.env.ROUNDTABLE_AGENT_TIMEOUT_MS);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 120_000;
+}

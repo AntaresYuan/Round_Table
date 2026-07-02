@@ -1,12 +1,19 @@
-import { spawn } from 'node:child_process';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { readData } from '../store.js';
 import type { AgentEvent, ArtifactKind, PlanTask } from '../types.js';
 import { agentForTask, type AgentProfile } from './agent-roster.js';
 import { deliverableText } from './deliverable.js';
 import { runOnE2B } from './adapters/e2b-adapter.js';
-import { miniMaxModel, MiniMaxUnavailableError, runOnMiniMax } from './adapters/minimax-adapter.js';
-import { openAICompatModel, OpenAICompatUnavailableError, runOnOpenAICompat } from './adapters/openai-compat-adapter.js';
+import { MiniMaxUnavailableError, resolvedMiniMaxModel, runOnMiniMax } from './adapters/minimax-adapter.js';
+import { OpenAICompatUnavailableError, resolvedOpenAICompatModel, runOnOpenAICompat } from './adapters/openai-compat-adapter.js';
+import { configuredRuntimeForAgent, mergedRuntimeConfigForAgent } from './cli-runtimes/registry.js';
+import { executeCliRuntime } from './cli-runtimes/runner.js';
+import {
+  createRuntimeConversation,
+  finishRuntimeConversation,
+  runtimeConversationCallbacks,
+} from './runtime-actions.js';
 
 export type AgentRunResult = {
   text: string;
@@ -22,7 +29,9 @@ export async function runAgentTask(input: {
   workspace: string;
   task: PlanTask;
   message: string;
+  turnId?: string | undefined;
   handoffContext?: string | undefined;
+  runtimeEnv?: NodeJS.ProcessEnv | undefined;
 }): Promise<AgentRunResult> {
   const adapter = normalizeAdapter(input.adapter);
   if (adapter === 'minimax') {
@@ -49,13 +58,15 @@ export function normalizeAdapter(
   // Accept a few friendly aliases for the same code path.
   if (raw === 'openai-compat' || raw === 'openai' || raw === 'deepseek') return 'openai-compat';
   if (raw === 'e2b') return 'e2b';
-  const wantsExternalCli = raw === 'agent-cli'
-    || raw === 'external-cli'
-    || raw === 'claude'
+  if (raw === 'agent-cli' || raw === 'external-cli' || raw === 'cli-runtime' || raw === 'runtime' || raw === 'cli') {
+    return 'agent-cli';
+  }
+  const wantsExternalCli = raw === 'claude'
     || raw === 'claude-code'
     || raw === 'claude-cli'
-    || raw === 'opencode'
-    || raw === 'cli';
+    || raw === 'codex'
+    || raw === 'codex-cli'
+    || raw === 'opencode';
   if (wantsExternalCli && externalCliEnabled()) return 'agent-cli';
   return 'local-dispatch';
 }
@@ -98,53 +109,92 @@ async function runAgentCliTask(input: {
   workspace: string;
   task: PlanTask;
   message: string;
+  turnId?: string | undefined;
   handoffContext?: string | undefined;
+  runtimeEnv?: NodeJS.ProcessEnv | undefined;
 }): Promise<AgentRunResult> {
   const agent = agentForTask(input.task);
   const path = pathForTask(input.task);
   const prompt = agentPrompt(agent, input);
-  const command = commandForAgent(agent);
-  const args = commandArgs(prompt, agent);
+  const data = await readData();
+  const runtimeEnv = input.runtimeEnv ?? process.env;
+  const runtime = configuredRuntimeForAgent(agent, data.agentRuntimeConfigs, runtimeEnv);
+  if (runtime === 'local-dispatch') return runLocalTask(input);
+
+  const config = mergedRuntimeConfigForAgent(
+    agent,
+    runtime,
+    data.agentRuntimeConfigs,
+    data.agentRuntimeDefaults,
+  );
+  const conversation = await createRuntimeConversation({
+    agent,
+    runtime,
+    title: input.task.title,
+    workspacePath: input.workspace,
+    turnId: input.turnId ?? null,
+    taskId: input.task.id,
+  });
   const toolId = `tool_${input.task.id}`;
   const started: AgentEvent[] = [
-    { type: 'thinking_delta', delta: `Starting ${agent.displayName} through CLI: ${command}` },
+    { type: 'thinking_delta', delta: `Starting ${agent.displayName} through ${runtime}.` },
     {
       type: 'tool_use',
       id: toolId,
-      name: 'agent_cli',
-      input: { command, agentId: agent.id, role: agent.role, path },
+      name: 'agent_runtime',
+      input: { runtime, agentId: agent.id, role: agent.role, path, conversationId: conversation.id },
     },
   ];
 
   try {
-    const result = await runCommand(command, args, input.workspace, timeoutMs());
-    const output = result.stdout.trim() || result.stderr.trim();
-    const ok = result.exitCode === 0 && output.length > 0;
-    const text = ok ? output : `# ${input.task.title}\n\nAgent CLI did not produce a usable result.\n\n${result.stderr || result.stdout}`;
+    const result = await executeCliRuntime({
+      conversationId: conversation.id,
+      runtime,
+      agent,
+      config,
+      workspace: input.workspace,
+      prompt,
+      timeoutMs: timeoutMs(),
+      envSnapshot: runtimeEnv,
+      callbacks: runtimeConversationCallbacks(conversation.id),
+    });
+    const ok = result.ok;
+    const text = ok
+      ? result.text
+      : `# ${input.task.title}\n\n${runtime} did not produce a usable result.\n\n${result.text}`;
     await writeWorkspaceFile(input.workspace, path, text);
+    await finishRuntimeConversation(conversation.id, ok ? 'completed' : 'failed', result.error);
     return {
       text,
       path,
       kind: kindForPath(path),
       ok,
-      error: ok ? null : `external_cli_exit_${result.exitCode}`,
+      error: result.error,
       events: [
         ...started,
         {
           type: 'tool_result',
           id: toolId,
-          output: { exitCode: result.exitCode, stdoutBytes: result.stdout.length, stderrBytes: result.stderr.length },
+          output: {
+            runtime,
+            command: result.command,
+            pid: result.pid ?? 0,
+            chars: result.text.length,
+            conversationId: conversation.id,
+          },
           ...(ok ? {} : { isError: true }),
         },
+        ...result.events,
         { type: 'file_change', path, kind: 'create', diff: `created ${path}` },
-        { type: 'text_delta', delta: ok ? `${agent.displayName} completed via CLI; transcript saved at ${path}.` : `Agent CLI failed; captured diagnostic artifact at ${path}.` },
-        ok ? { type: 'done', finishReason: 'completed' } : { type: 'error', message: `external_cli_exit_${result.exitCode}`, recoverable: true },
+        { type: 'text_delta', delta: ok ? `${agent.displayName} completed via ${runtime}; transcript saved at ${path}.` : `${runtime} failed; captured diagnostic artifact at ${path}.` },
+        ok ? { type: 'done', finishReason: 'completed' } : { type: 'error', message: result.error ?? 'runtime_failed', recoverable: true },
       ],
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const text = `# ${input.task.title}\n\nAgent CLI failed before producing output.\n\n${message}`;
     await writeWorkspaceFile(input.workspace, path, text);
+    await finishRuntimeConversation(conversation.id, 'failed', message);
     return {
       text,
       path,
@@ -330,16 +380,17 @@ async function runChatModelTask(
 // Runs the task against the real MiniMax model. Throws MiniMaxUnavailableError
 // (from runOnMiniMax) when no key is set — the dispatch layer catches it and
 // falls back to local-dispatch.
-function runMiniMaxTask(input: {
+async function runMiniMaxTask(input: {
   workspace: string;
   task: PlanTask;
   message: string;
   handoffContext?: string | undefined;
 }): Promise<AgentRunResult> {
+  const model = await resolvedMiniMaxModel();
   return runChatModelTask(input, {
     name: 'MiniMax',
     toolName: 'minimax_chat',
-    model: miniMaxModel(),
+    model,
     run: runOnMiniMax,
     isUnavailable: (error) => error instanceof MiniMaxUnavailableError,
   });
@@ -348,16 +399,17 @@ function runMiniMaxTask(input: {
 // Runs the task against the configured OpenAI-compatible model. Throws
 // OpenAICompatUnavailableError (from runOnOpenAICompat) when unconfigured — the
 // dispatch layer catches it and falls back to local-dispatch.
-function runOpenAICompatTask(input: {
+async function runOpenAICompatTask(input: {
   workspace: string;
   task: PlanTask;
   message: string;
   handoffContext?: string | undefined;
 }): Promise<AgentRunResult> {
+  const model = await resolvedOpenAICompatModel();
   return runChatModelTask(input, {
-    name: openAICompatModel(),
+    name: model,
     toolName: 'model_chat',
-    model: openAICompatModel(),
+    model,
     run: runOnOpenAICompat,
     isUnavailable: (error) => error instanceof OpenAICompatUnavailableError,
   });
@@ -650,30 +702,4 @@ function modelMaxTokens(): number | undefined {
 function maxModelContinuations(): number {
   const parsed = Number(process.env.ROUNDTABLE_MODEL_MAX_CONTINUATIONS);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 2;
-}
-
-async function runCommand(
-  command: string,
-  args: string[],
-  cwd: string,
-  timeout: number,
-): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-  const child = spawn(command, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
-  let stdout = '';
-  let stderr = '';
-  child.stdout.setEncoding('utf8');
-  child.stderr.setEncoding('utf8');
-  child.stdout.on('data', (chunk: string) => {
-    stdout += chunk;
-  });
-  child.stderr.on('data', (chunk: string) => {
-    stderr += chunk;
-  });
-  const timer = setTimeout(() => child.kill('SIGTERM'), timeout);
-  const exitCode = await new Promise<number>((resolve, reject) => {
-    child.on('error', reject);
-    child.on('close', (code) => resolve(code ?? 1));
-  });
-  clearTimeout(timer);
-  return { exitCode, stdout, stderr };
 }

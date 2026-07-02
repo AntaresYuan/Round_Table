@@ -1,6 +1,8 @@
 import { getServerSession } from 'next-auth';
 import { authOptions, type AuthSession } from './auth.js';
 import { ActionError } from './actions/turn-actions.js';
+import { RuntimeActionError } from './actions/runtime-actions.js';
+import { SettingsActionError } from './actions/settings-actions.js';
 import type { Actor } from './types.js';
 
 export async function routeActor(): Promise<Actor | null> {
@@ -10,6 +12,12 @@ export async function routeActor(): Promise<Actor | null> {
 
 export function jsonError(error: unknown): Response {
   if (error instanceof ActionError) {
+    return Response.json({ ok: false, error: error.code }, { status: error.status });
+  }
+  if (error instanceof RuntimeActionError) {
+    return Response.json({ ok: false, error: error.code }, { status: error.status });
+  }
+  if (error instanceof SettingsActionError) {
     return Response.json({ ok: false, error: error.code }, { status: error.status });
   }
   const message = error instanceof Error ? error.message : String(error);

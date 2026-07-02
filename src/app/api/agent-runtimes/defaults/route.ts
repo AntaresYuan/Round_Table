@@ -1,0 +1,33 @@
+import { z } from 'zod';
+import { saveRuntimeDefaultConfig } from '@/server/actions/runtime-actions';
+import { jsonError, routeActor } from '@/server/route-utils';
+
+const BodySchema = z.object({
+  runtime: z.string().min(1),
+  command: z.string().nullable().optional(),
+  args: z.array(z.string()).optional(),
+  env: z.record(z.string()).optional(),
+  clearEnv: z.boolean().optional(),
+  model: z.string().nullable().optional(),
+});
+
+export async function POST(req: Request) {
+  try {
+    const body = BodySchema.parse(await req.json());
+    const actor = await routeActor();
+    const config = await saveRuntimeDefaultConfig({ ...body, actor });
+    return Response.json({
+      ok: true,
+      config: {
+        runtime: config.runtime,
+        command: config.command,
+        args: config.args,
+        model: config.model,
+        configuredEnvKeys: Object.keys(config.env).sort(),
+        updatedAt: config.updatedAt,
+      },
+    });
+  } catch (error) {
+    return jsonError(error);
+  }
+}

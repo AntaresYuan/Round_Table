@@ -10,6 +10,7 @@ import {
   interruptTurn,
   listTurns,
 } from '../src/server/actions/turn-actions.js';
+import { saveAgentRuntimeConfig } from '../src/server/actions/runtime-actions.js';
 import { resetData } from '../src/server/store.js';
 import type { Actor } from '../src/server/types.js';
 
@@ -31,8 +32,6 @@ afterEach(async () => {
   delete process.env.ROUNDTABLE_DATA_PATH;
   delete process.env.ROUNDTABLE_WORKSPACE_ROOT;
   delete process.env.ROUNDTABLE_AGENT_ADAPTER;
-  delete process.env.ROUNDTABLE_AGENT_COMMAND;
-  delete process.env.ROUNDTABLE_AGENT_ARGS;
   delete process.env.ROUNDTABLE_ENABLE_EXTERNAL_AGENT;
   delete process.env.ROUNDTABLE_MAX_FIX_ROUNDS;
   delete process.env.ROUNDTABLE_SAFETY_ENABLED;
@@ -65,13 +64,12 @@ describe('dispatchTurn — DAG scheduler integration', () => {
   });
 
   it('blocks a high-severity finding and derives bounded fixer tasks', async () => {
-    // Force every agent run to emit an OpenAI-style key via the external CLI
-    // adapter (echo). The safety gate marks each task as a blocking failure,
-    // which routes into the fix loop; fixers also emit the key, so the loop is
-    // capped at ROUNDTABLE_MAX_FIX_ROUNDS.
-    process.env.ROUNDTABLE_ENABLE_EXTERNAL_AGENT = '1';
-    process.env.ROUNDTABLE_AGENT_COMMAND = 'echo';
-    process.env.ROUNDTABLE_AGENT_ARGS = 'sk-aaaaaaaaaaaaaaaaaaaaaaaa';
+    // Force every agent run to emit an OpenAI-style key via the configured CLI
+    // runtime. The safety gate marks each task as a blocking failure, which
+    // routes into the fix loop; fixers also emit the key, so the loop is capped
+    // at ROUNDTABLE_MAX_FIX_ROUNDS.
+    await configureRuntimeOutput('atlas', 'sk-aaaaaaaaaaaaaaaaaaaaaaaa');
+    await configureRuntimeOutput('fixer', 'sk-aaaaaaaaaaaaaaaaaaaaaaaa');
     process.env.ROUNDTABLE_MAX_FIX_ROUNDS = '2';
 
     const turn = await createTurn({ actor, message: '@atlas build the navbar.' });
@@ -90,12 +88,10 @@ describe('dispatchTurn — DAG scheduler integration', () => {
     expect(fixers.length).toBeGreaterThanOrEqual(1);
     expect(fixers.length).toBeLessThanOrEqual(2);
     expect(fixers.every((r) => (r.fixRound ?? 0) <= 2)).toBe(true);
-  });
+  }, 10_000);
 
   it('does not block when safety is disabled', async () => {
-    process.env.ROUNDTABLE_ENABLE_EXTERNAL_AGENT = '1';
-    process.env.ROUNDTABLE_AGENT_COMMAND = 'echo';
-    process.env.ROUNDTABLE_AGENT_ARGS = 'sk-aaaaaaaaaaaaaaaaaaaaaaaa';
+    await configureRuntimeOutput('atlas', 'sk-aaaaaaaaaaaaaaaaaaaaaaaa');
     process.env.ROUNDTABLE_SAFETY_ENABLED = 'false';
 
     const turn = await createTurn({ actor, message: '@atlas build the navbar.' });
@@ -111,11 +107,10 @@ describe('dispatchTurn — DAG scheduler integration', () => {
   });
 
   it('does not keep final delivery blocked after a fixer repairs a blocking review', async () => {
-    process.env.ROUNDTABLE_ENABLE_EXTERNAL_AGENT = '1';
-    process.env.ROUNDTABLE_AGENT_COMMAND = 'echo';
-    process.env.ROUNDTABLE_AGENT_ARGS = 'Looks good -- no blockers';
-    process.env.ROUNDTABLE_AGENT_ARGS_REVIEWER = 'Critical: generated page is missing the checkout confirmation';
-    process.env.ROUNDTABLE_AGENT_ARGS_FIXER = 'Fixed checkout confirmation and verified the repair';
+    await configureRuntimeOutput('orchestrator', 'Looks good -- no blockers');
+    await configureRuntimeOutput('atlas', 'Looks good -- no blockers');
+    await configureRuntimeOutput('vera', 'Critical: generated page is missing the checkout confirmation');
+    await configureRuntimeOutput('fixer', 'Fixed checkout confirmation and verified the repair');
     process.env.ROUNDTABLE_MAX_FIX_ROUNDS = '1';
 
     const turn = await createTurn({ actor, message: 'Build a checkout page and review it.' });
@@ -190,3 +185,12 @@ describe('dispatchTurn — DAG scheduler integration', () => {
     })).rejects.toMatchObject({ code: 'turn_not_found', status: 404 });
   });
 });
+
+async function configureRuntimeOutput(agentId: string, text: string): Promise<void> {
+  await saveAgentRuntimeConfig({
+    agentId,
+    runtime: 'custom-cli',
+    command: process.execPath,
+    args: ['-e', `process.stdout.write(${JSON.stringify(text)})`],
+  });
+}

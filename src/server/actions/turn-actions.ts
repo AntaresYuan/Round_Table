@@ -39,6 +39,7 @@ import {
   type TaskResult,
 } from './scheduler.js';
 import { describeFindings, hasBlockingFinding, safetyEnabled, scanArtifact, type SafetyFinding } from './safety.js';
+import { resolveDefaultAgentAdapter } from './settings-actions.js';
 import { removeWorkspace } from './workspace-cleanup.js';
 import { AGENT_ROSTER, mentionedAgents, mentionTokens, messageWithoutMentions, type AgentProfile } from './agent-roster.js';
 
@@ -408,7 +409,8 @@ export async function dispatchTurn(input: DispatchInput): Promise<DispatchRespon
   if (!turn) throw new ActionError('turn_not_found', 404);
   if (turn.dispatchStatus === 'completed' && turn.dispatch.length > 0) return dispatchResponse(turn);
 
-  const adapter = normalizeAdapter(input.agentAdapter);
+  const adapter = normalizeAdapter(input.agentAdapter ?? await resolveDefaultAgentAdapter() ?? undefined);
+  const runtimeEnv = { ...process.env };
   const workspace = await prepareWorkspace(turn);
   await updateTurn(turn.id, (current) => ({
     ...current,
@@ -463,7 +465,7 @@ export async function dispatchTurn(input: DispatchInput): Promise<DispatchRespon
     let result;
     let fallbackNote: AgentEvent | null = null;
     try {
-      result = await runAgentTask({ adapter, workspace, task: effectiveTask, message: turn.message, handoffContext });
+      result = await runAgentTask({ adapter, workspace, task: effectiveTask, message: turn.message, turnId: turn.id, handoffContext, runtimeEnv });
     } catch (error) {
       // Opt-in adapter unavailable (E2B / MiniMax / OpenAI-compatible): fall back
       // to local-dispatch in this layer (not silently inside the adapter). The
@@ -478,7 +480,7 @@ export async function dispatchTurn(input: DispatchInput): Promise<DispatchRespon
           type: 'thinking_delta',
           delta: `${error.name} (${error.message}); fell back to local-dispatch.`,
         };
-        result = await runAgentTask({ adapter: 'local-dispatch', workspace, task: effectiveTask, message: turn.message, handoffContext });
+        result = await runAgentTask({ adapter: 'local-dispatch', workspace, task: effectiveTask, message: turn.message, turnId: turn.id, handoffContext, runtimeEnv });
       } else {
         throw error;
       }
