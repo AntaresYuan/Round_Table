@@ -219,6 +219,33 @@ describe('runtime config and workflow dispatch integration', () => {
     expect(JSON.stringify(state)).not.toContain('mini-secret');
   });
 
+  it('persists CLI interaction defaults and exposes them through inherited agent config', async () => {
+    await saveRuntimeDefaultConfig({
+      runtime: 'claude-code',
+      command: process.execPath,
+      interactionMode: 'manual',
+      effort: 'high',
+    });
+    await saveAgentRuntimeConfig({
+      agentId: 'atlas',
+      runtime: 'claude-code',
+    });
+
+    const state = await listRuntimeState();
+    const claude = state.supported.find((item) => item.kind === 'claude-code');
+    const atlas = state.agents.find((item) => item.id === 'atlas');
+
+    expect(claude).toMatchObject({
+      interactionMode: 'manual',
+      effort: 'high',
+    });
+    expect(atlas).toMatchObject({
+      runtime: 'claude-code',
+      interactionMode: 'manual',
+      effort: 'high',
+    });
+  });
+
   it('dispatches an agent task through the saved CLI runtime and records the conversation', async () => {
     await saveAgentRuntimeConfig({
       agentId: 'atlas',
@@ -293,6 +320,8 @@ function runtimeConfig(agentId: string, runtime: AgentRuntimeKind, args: string[
     env: {},
     model: null,
     modelProvider: null,
+    interactionMode: null,
+    effort: null,
     updatedAt: new Date(0).toISOString(),
   };
 }

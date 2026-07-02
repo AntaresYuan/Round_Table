@@ -9,6 +9,7 @@ import {
   resolveDefaultAgentAdapter,
   saveSettings,
 } from '../src/server/actions/settings-actions.js';
+import { saveRuntimeDefaultConfig } from '../src/server/actions/runtime-actions.js';
 import { readData, resetData } from '../src/server/store.js';
 
 let tempDir = '';
@@ -89,6 +90,30 @@ describe('settings actions', () => {
 
     await saveSettings({ defaultAgentAdapter: 'agent-cli' });
     expect(await resolveDefaultAgentAdapter()).toBe('agent-cli');
+  });
+
+  it('uses configured CLI runtimes before model APIs in auto mode', async () => {
+    await saveSettings({
+      providers: [{
+        provider: 'minimax',
+        enabled: true,
+        baseUrl: 'https://api.minimaxi.com/v1',
+        model: 'MiniMax-M3',
+        apiKey: 'mini-secret',
+      }],
+    });
+    expect(await resolveDefaultAgentAdapter()).toBe('minimax');
+
+    await saveRuntimeDefaultConfig({
+      runtime: 'claude-code',
+      command: process.execPath,
+      interactionMode: 'auto',
+    });
+
+    const state = await listSettingsState();
+    expect(await resolveDefaultAgentAdapter()).toBe('agent-cli');
+    expect(state.effectiveAgentAdapter).toBe('agent-cli');
+    expect(state.effectiveAgentAdapterSource).toBe('runtime-config');
   });
 
   it('keeps existing keys when saving a provider with an empty key field', async () => {

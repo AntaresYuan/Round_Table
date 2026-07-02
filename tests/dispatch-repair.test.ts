@@ -266,8 +266,8 @@ describe('runAgentTask — chat model deliverable extraction', () => {
     expect(result.error).toBe('deliverable_not_usable');
   });
 
-  it('treats organizer tools as previewable app deliverables', async () => {
-    stubModelResponse('<!DOCTYPE html>\n<html><head></head><body><h1>Fuji Gear</h1></body></html>');
+  it('does not force organizer tools into single-page HTML artifacts', async () => {
+    stubModelResponse('# Fuji Gear\n\nImplement this as a project with app files when a CLI runtime is available.');
     const result = await runAgentTask({
       adapter: 'openai-compat',
       workspace: tempDir,
@@ -276,8 +276,8 @@ describe('runAgentTask — chat model deliverable extraction', () => {
     });
 
     expect(result.ok).toBe(true);
-    expect(result.kind).toBe('preview');
-    expect(result.path.endsWith('.html')).toBe(true);
+    expect(result.kind).toBe('markdown');
+    expect(result.path.endsWith('.md')).toBe(true);
   });
 });
 

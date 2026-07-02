@@ -245,6 +245,8 @@ function normalizeRuntimeConfig(config: AgentRuntimeConfig): AgentRuntimeConfig 
   return {
     ...config,
     modelProvider: config.modelProvider ?? null,
+    interactionMode: config.interactionMode ?? null,
+    effort: config.effort ?? null,
   };
 }
 
@@ -252,6 +254,8 @@ function normalizeRuntimeDefault(config: AgentRuntimeDefaultConfig): AgentRuntim
   return {
     ...config,
     modelProvider: config.modelProvider ?? null,
+    interactionMode: config.interactionMode ?? null,
+    effort: config.effort ?? null,
   };
 }
 

@@ -26,7 +26,7 @@ export type ResolvedModelProvider = {
 
 export type AgentAdapterResolution = {
   value: string;
-  source: 'settings' | 'env' | 'model-provider' | 'built-in';
+  source: 'settings' | 'env' | 'runtime-config' | 'model-provider' | 'built-in';
   modelProvider: ModelProviderKind | null;
 };
 
@@ -190,6 +190,10 @@ export async function resolveDefaultAgentAdapterState(
   const fromEnv = normalizeAgentAdapter(process.env.ROUNDTABLE_AGENT_ADAPTER);
   if (fromEnv) return { value: fromEnv, source: 'env', modelProvider: null };
 
+  if (hasConfiguredAgentCli(data)) {
+    return { value: 'agent-cli', source: 'runtime-config', modelProvider: null };
+  }
+
   const provider = firstConfiguredModelProvider(data);
   if (provider) {
     return {
@@ -295,6 +299,11 @@ function firstConfiguredModelProvider(data: RoundtableData): ModelProviderKind |
     if (resolveModelProviderFromData(provider, data).configured) return provider;
   }
   return null;
+}
+
+function hasConfiguredAgentCli(data: RoundtableData): boolean {
+  return [...data.agentRuntimeConfigs, ...data.agentRuntimeDefaults]
+    .some((config) => config.runtime !== 'local-dispatch');
 }
 
 function adapterForModelProvider(provider: ModelProviderKind): string {

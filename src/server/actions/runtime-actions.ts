@@ -6,6 +6,8 @@ import type {
   AgentRuntimeConfig,
   AgentRuntimeConversation,
   AgentRuntimeDefaultConfig,
+  AgentRuntimeEffort,
+  AgentRuntimeInteractionMode,
   AgentRuntimeKind,
   Actor,
   ModelProviderKind,
@@ -47,6 +49,8 @@ export type RuntimeState = {
     args: string[];
     model: string | null;
     modelProvider: ModelProviderKind | null;
+    interactionMode: AgentRuntimeInteractionMode | null;
+    effort: AgentRuntimeEffort | null;
     configured: boolean;
     configuredEnvKeys: string[];
     requiredEnvKeys: string[];
@@ -62,6 +66,8 @@ export type RuntimeState = {
     args: string[];
     model: string | null;
     modelProvider: ModelProviderKind | null;
+    interactionMode: AgentRuntimeInteractionMode | null;
+    effort: AgentRuntimeEffort | null;
     configured: boolean;
   }>;
   modelProviders: Array<{
@@ -88,6 +94,8 @@ export async function listRuntimeState(): Promise<RuntimeState> {
       args: defaultConfig?.args ?? [],
       model: defaultConfig?.model ?? null,
       modelProvider: defaultConfig?.modelProvider ?? null,
+      interactionMode: defaultConfig?.interactionMode ?? null,
+      effort: defaultConfig?.effort ?? null,
       configured: defaultConfig !== null,
       configuredEnvKeys: Object.keys(defaultConfig?.env ?? {}).sort(),
       requiredEnvKeys: definition.envKeys,
@@ -113,6 +121,8 @@ export async function listRuntimeState(): Promise<RuntimeState> {
       args: merged?.args ?? [],
       model: merged?.model ?? null,
       modelProvider: merged?.modelProvider ?? null,
+      interactionMode: merged?.interactionMode ?? null,
+      effort: merged?.effort ?? null,
       configured: config !== null,
     };
   });
@@ -142,6 +152,8 @@ export async function saveAgentRuntimeConfig(input: {
   env?: Record<string, string> | undefined;
   model?: string | null | undefined;
   modelProvider?: string | null | undefined;
+  interactionMode?: string | null | undefined;
+  effort?: string | null | undefined;
   actor?: Actor | null | undefined;
 }): Promise<AgentRuntimeConfig> {
   const agent = agentById(input.agentId);
@@ -156,6 +168,8 @@ export async function saveAgentRuntimeConfig(input: {
     env: sanitizeEnv(input.env ?? {}),
     model: clean(input.model) ?? null,
     modelProvider: normalizeModelProvider(input.modelProvider),
+    interactionMode: normalizeInteractionMode(input.interactionMode),
+    effort: normalizeEffort(input.effort),
     updatedAt: nowIso(),
   };
   await mutateData((data) => {
@@ -175,6 +189,8 @@ export async function saveRuntimeDefaultConfig(input: {
   clearEnv?: boolean | undefined;
   model?: string | null | undefined;
   modelProvider?: string | null | undefined;
+  interactionMode?: string | null | undefined;
+  effort?: string | null | undefined;
   actor?: Actor | null | undefined;
 }): Promise<AgentRuntimeDefaultConfig> {
   const runtime = normalizeRuntimeKind(input.runtime);
@@ -194,6 +210,8 @@ export async function saveRuntimeDefaultConfig(input: {
       env,
       model: clean(input.model) ?? null,
       modelProvider: normalizeModelProvider(input.modelProvider),
+      interactionMode: normalizeInteractionMode(input.interactionMode),
+      effort: normalizeEffort(input.effort),
       updatedAt: nowIso(),
     };
     data.agentRuntimeDefaults = [
@@ -391,6 +409,21 @@ function normalizeModelProvider(value: string | null | undefined): ModelProvider
     return 'openai-compatible';
   }
   throw new RuntimeActionError('model_provider_not_supported', 400);
+}
+
+function normalizeInteractionMode(value: string | null | undefined): AgentRuntimeInteractionMode | null {
+  const raw = clean(value)?.toLowerCase();
+  if (!raw || raw === 'none' || raw === 'default') return null;
+  if (raw === 'auto' || raw === 'automatic') return 'auto';
+  if (raw === 'manual' || raw === 'ask' || raw === 'confirm') return 'manual';
+  throw new RuntimeActionError('interaction_mode_not_supported', 400);
+}
+
+function normalizeEffort(value: string | null | undefined): AgentRuntimeEffort | null {
+  const raw = clean(value)?.toLowerCase();
+  if (!raw || raw === 'none' || raw === 'default') return null;
+  if (raw === 'low' || raw === 'medium' || raw === 'high' || raw === 'xhigh' || raw === 'max') return raw;
+  throw new RuntimeActionError('effort_not_supported', 400);
 }
 
 function sanitizeEnv(env: Record<string, string>): Record<string, string> {

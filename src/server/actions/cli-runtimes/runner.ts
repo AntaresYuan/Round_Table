@@ -153,15 +153,13 @@ async function commandForRuntime(input: RuntimeExecutionInput): Promise<CommandS
     || input.runtime;
 
   if (input.runtime === 'claude-code') {
-    const args = configuredRuntimeArgs(input)
-      ?? ['-p', input.prompt, '--output-format', 'stream-json', '--verbose', '--permission-mode', 'bypassPermissions'];
+    const args = configuredRuntimeArgs(input) ?? claudePrintArgs(input, env);
     return commandSpec(command, args, null, env);
   }
 
   if (input.runtime === 'claude-code-router') {
     await prepareClaudeCodeRouterConfig(input, env);
-    const args = configuredRuntimeArgs(input)
-      ?? ['code', '-p', input.prompt, '--output-format', 'stream-json', '--verbose', '--permission-mode', 'bypassPermissions'];
+    const args = configuredRuntimeArgs(input) ?? ['code', ...claudePrintArgs(input, env, { includeModel: false })];
     return commandSpec(command, args, null, env);
   }
 
@@ -245,6 +243,12 @@ async function buildRuntimeEnv(
   const env: NodeJS.ProcessEnv = { ...runtimeEnv, ...(config?.env ?? {}) };
   await applyModelProviderEnv(env, config?.modelProvider ?? null);
   const model = runtimeModel(runtime, config, env);
+  if ((runtime === 'claude-code' || runtime === 'claude-code-router') && runtimeInteractionMode(config) === 'auto') {
+    env.CI = env.CI || 'true';
+    env.FORCE_COLOR = env.FORCE_COLOR || '0';
+    env.NODE_NO_READLINE = env.NODE_NO_READLINE || '1';
+    env.TERM = env.TERM || 'dumb';
+  }
   if (model) {
     if (runtime === 'claude-code') env.CLAUDE_MODEL = model;
     if (runtime === 'claude-code-router') {
@@ -274,6 +278,45 @@ function runtimeModel(
   if (runtime === 'codex') return runtimeEnv.CODEX_MODEL || runtimeEnv.OPENAI_MODEL || runtimeEnv.LLM_MODEL || '';
   if (runtime === 'opencode') return runtimeEnv.OPENCODE_MODEL || runtimeEnv.LLM_MODEL || '';
   return '';
+}
+
+function claudePrintArgs(
+  input: RuntimeExecutionInput,
+  env: NodeJS.ProcessEnv,
+  options: { includeModel?: boolean } = {},
+): string[] {
+  const includeModel = options.includeModel ?? true;
+  const model = includeModel ? runtimeModel(input.runtime, input.config, env) : '';
+  const effort = runtimeEffort(input.config, env);
+  return [
+    '-p',
+    input.prompt,
+    '--output-format',
+    'stream-json',
+    '--verbose',
+    '--permission-mode',
+    claudePermissionMode(input.config),
+    ...(model ? ['--model', model] : []),
+    ...(effort ? ['--effort', effort] : []),
+  ];
+}
+
+function runtimeInteractionMode(config: AgentRuntimeConfig | null): 'auto' | 'manual' {
+  return config?.interactionMode ?? 'auto';
+}
+
+function claudePermissionMode(config: AgentRuntimeConfig | null): string {
+  return runtimeInteractionMode(config) === 'manual' ? 'default' : 'auto';
+}
+
+function runtimeEffort(
+  config: AgentRuntimeConfig | null,
+  runtimeEnv: NodeJS.ProcessEnv,
+): string {
+  return config?.effort
+    || runtimeEnv.ROUNDTABLE_CLAUDE_EFFORT
+    || runtimeEnv.ROUNDTABLE_AGENT_EFFORT
+    || '';
 }
 
 async function applyModelProviderEnv(
@@ -365,7 +408,7 @@ function defaultCustomCommand(agent: AgentProfile, runtimeEnv: NodeJS.ProcessEnv
 
 function defaultCustomArgs(command: string, prompt: string): string[] {
   if (command.endsWith('opencode') || command.includes('/opencode')) return ['run', prompt];
-  return ['-p', prompt, '--permission-mode', 'bypassPermissions'];
+  return ['-p', prompt, '--permission-mode', 'auto'];
 }
 
 function substitutePrompt(args: string[], prompt: string, mode: 'argv' | 'stdin' = 'argv'): string[] {

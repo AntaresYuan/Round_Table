@@ -144,6 +144,8 @@ export function mergedRuntimeConfigForAgent(
     env: { ...(defaultConfig?.env ?? {}), ...(agentConfig?.env ?? {}) },
     model: agentConfig?.model ?? defaultConfig?.model ?? null,
     modelProvider: agentConfig?.modelProvider ?? defaultConfig?.modelProvider ?? null,
+    interactionMode: agentConfig?.interactionMode ?? defaultConfig?.interactionMode ?? null,
+    effort: agentConfig?.effort ?? defaultConfig?.effort ?? null,
     updatedAt: agentConfig?.updatedAt ?? defaultConfig?.updatedAt ?? new Date(0).toISOString(),
   };
 }

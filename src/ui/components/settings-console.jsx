@@ -282,6 +282,7 @@ function sourceLabel(source) {
   return {
     settings: 'settings',
     env: 'env',
+    'runtime-config': 'runtime config',
     'model-provider': 'model API',
     'built-in': 'built in',
   }[source] || 'auto';

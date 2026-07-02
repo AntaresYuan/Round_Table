@@ -46,6 +46,27 @@ const field = {
   outline: 'none',
 };
 
+const interactionOptions = [
+  { value: '', label: 'Confirm: runtime default' },
+  { value: 'auto', label: 'Confirm: auto' },
+  { value: 'manual', label: 'Confirm: manual' },
+];
+
+const runtimeInteractionOptions = [
+  { value: '', label: 'Confirm: auto' },
+  { value: 'auto', label: 'Confirm: auto' },
+  { value: 'manual', label: 'Confirm: manual' },
+];
+
+const effortOptions = [
+  { value: '', label: 'Effort: default' },
+  { value: 'low', label: 'Effort: low' },
+  { value: 'medium', label: 'Effort: medium' },
+  { value: 'high', label: 'Effort: high' },
+  { value: 'xhigh', label: 'Effort: xhigh' },
+  { value: 'max', label: 'Effort: max' },
+];
+
 function AgentRuntimeConsole() {
   const [state, setState] = useState(null);
   const [drafts, setDrafts] = useState({});
@@ -76,6 +97,8 @@ function AgentRuntimeConsole() {
               command: agent.command || '',
               model: agent.model || '',
               modelProvider: agent.modelProvider || '',
+              interactionMode: agent.interactionMode || '',
+              effort: agent.effort || '',
               argsText: (agent.args || []).join(' '),
             };
           }
@@ -90,6 +113,8 @@ function AgentRuntimeConsole() {
               command: runtime.command || '',
               model: runtime.model || '',
               modelProvider: runtime.modelProvider || '',
+              interactionMode: runtime.interactionMode || '',
+              effort: runtime.effort || '',
               argsText: (runtime.args || []).join(' '),
               envText: '',
               clearEnv: false,
@@ -144,6 +169,8 @@ function AgentRuntimeConsole() {
           command: draft.command || null,
           model: draft.model || null,
           modelProvider: draft.modelProvider || null,
+          interactionMode: draft.interactionMode || null,
+          effort: draft.effort || null,
           args: splitArgs(draft.argsText || ''),
         }),
       });
@@ -165,6 +192,8 @@ function AgentRuntimeConsole() {
       command: draft.command || null,
       model: draft.model || null,
       modelProvider: draft.modelProvider || null,
+      interactionMode: draft.interactionMode || null,
+      effort: draft.effort || null,
       args: splitArgs(draft.argsText || ''),
       clearEnv: Boolean(draft.clearEnv),
     };
@@ -315,6 +344,16 @@ function AgentRuntimeConsole() {
                     </select>
                     <input value={draft.model || ''} onChange={(e) => updateDraft(agent.id, { model: e.target.value })}
                       placeholder="model" style={field} />
+                    <select value={draft.interactionMode || ''} onChange={(e) => updateDraft(agent.id, { interactionMode: e.target.value })} style={field}>
+                      {interactionOptions.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </select>
+                    <select value={draft.effort || ''} onChange={(e) => updateDraft(agent.id, { effort: e.target.value })} style={field}>
+                      {effortOptions.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </select>
                     <select value={draft.modelProvider || ''} onChange={(e) => updateDraft(agent.id, { modelProvider: e.target.value })} style={{ ...field, gridColumn: '1 / -1' }}>
                       <option value="">API provider: runtime default</option>
                       {modelProviderOptions.map((provider) => (
@@ -377,6 +416,16 @@ function AgentRuntimeConsole() {
                             placeholder={runtime.binary ? `command (${runtime.binary})` : 'command'} style={field} />
                           <input value={draft.model || ''} onChange={(e) => updateRuntimeDraft(runtime.kind, { model: e.target.value })}
                             placeholder="model" style={field} />
+                          <select value={draft.interactionMode || ''} onChange={(e) => updateRuntimeDraft(runtime.kind, { interactionMode: e.target.value })} style={field}>
+                            {runtimeInteractionOptions.map((option) => (
+                              <option key={option.value} value={option.value}>{option.label}</option>
+                            ))}
+                          </select>
+                          <select value={draft.effort || ''} onChange={(e) => updateRuntimeDraft(runtime.kind, { effort: e.target.value })} style={field}>
+                            {effortOptions.map((option) => (
+                              <option key={option.value} value={option.value}>{option.label}</option>
+                            ))}
+                          </select>
                           <select value={draft.modelProvider || ''} onChange={(e) => updateRuntimeDraft(runtime.kind, { modelProvider: e.target.value })} style={{ ...field, gridColumn: '1 / -1' }}>
                             <option value="">API provider: none</option>
                             {modelProviderOptions.map((provider) => (
@@ -502,6 +551,7 @@ function sourceLabel(source, modelProvider) {
   return {
     settings: 'settings',
     env: 'env',
+    'runtime-config': 'runtime config',
     'built-in': 'built in',
   }[source] || 'auto';
 }

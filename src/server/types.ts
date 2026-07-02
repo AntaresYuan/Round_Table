@@ -110,6 +110,9 @@ export type AgentRuntimeKind =
   | 'codex'
   | 'opencode';
 
+export type AgentRuntimeInteractionMode = 'auto' | 'manual';
+export type AgentRuntimeEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
 export type AgentRuntimeConfig = {
   agentId: string;
   runtime: AgentRuntimeKind;
@@ -118,6 +121,8 @@ export type AgentRuntimeConfig = {
   env: Record<string, string>;
   model: string | null;
   modelProvider: ModelProviderKind | null;
+  interactionMode: AgentRuntimeInteractionMode | null;
+  effort: AgentRuntimeEffort | null;
   updatedAt: string;
 };
 
@@ -128,6 +133,8 @@ export type AgentRuntimeDefaultConfig = {
   env: Record<string, string>;
   model: string | null;
   modelProvider: ModelProviderKind | null;
+  interactionMode: AgentRuntimeInteractionMode | null;
+  effort: AgentRuntimeEffort | null;
   updatedAt: string;
 };
 

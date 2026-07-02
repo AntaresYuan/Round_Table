@@ -10,6 +10,8 @@ const BodySchema = z.object({
   clearEnv: z.boolean().optional(),
   model: z.string().nullable().optional(),
   modelProvider: z.string().nullable().optional(),
+  interactionMode: z.string().nullable().optional(),
+  effort: z.string().nullable().optional(),
 });
 
 export async function POST(req: Request) {
@@ -25,6 +27,8 @@ export async function POST(req: Request) {
         args: config.args,
         model: config.model,
         modelProvider: config.modelProvider,
+        interactionMode: config.interactionMode,
+        effort: config.effort,
         configuredEnvKeys: Object.keys(config.env).sort(),
         updatedAt: config.updatedAt,
       },
