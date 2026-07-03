@@ -10,8 +10,9 @@
 import React from 'react';
 import { Avatar, Icon, Spinner, Md, tint, alpha } from './primitives';
 import { agentForArtifact, agentForSeat, todoStatusFor } from '../lib/agent-utils';
+import { bundlePreviewArtifacts, withBundledPreview } from '../lib/preview-html';
 
-const { useState, useEffect, useRef } = React;
+const { useState, useEffect, useRef, useMemo } = React;
 
 function UserMsg({ text }) {
   return (
@@ -184,7 +185,8 @@ function LocalLiveTurn({ turn, agents, turnActions, showPreview }) {
   const running = turn.result?.dispatchStatus === 'running';
   const stopping = turn.result?.dispatchStage === 'interrupting' || turn.interrupting;
   const interrupted = failed && turn.result?.dispatchError === 'interrupted_by_user';
-  const artifacts = turn.result?.artifacts || [];
+  const rawArtifacts = turn.result?.artifacts || [];
+  const artifacts = useMemo(() => bundlePreviewArtifacts(rawArtifacts), [rawArtifacts]);
   const previewArtifact = previewArtifactFor(artifacts, agents);
   // The plan has been drafted but no agent has run yet — show the reviewable plan
   // with a Start button instead of the (empty) run details.
@@ -299,7 +301,7 @@ function previewArtifactFor(artifacts, agents) {
   const previews = (artifacts || []).filter((artifact) => artifact.kind === 'preview' && artifact.preview);
   // Prefer the homepage over whatever page happened to be scanned/listed first.
   const explicit = previews.find((artifact) => /(^|\/)index\.html?$/i.test(artifact.title || '')) ?? previews[0];
-  if (explicit) return explicit;
+  if (explicit) return withBundledPreview(explicit, artifacts);
   const candidates = (artifacts || [])
     .map((artifact, index) => {
       const owner = agentForArtifact(artifact, agents);
@@ -315,12 +317,12 @@ function previewArtifactFor(artifacts, agents) {
   candidates.sort((a, b) => b.score - a.score || a.index - b.index);
   const best = candidates[0];
   if (!best) return null;
-  return {
-    ...best.artifact,
+  return withBundledPreview({
+    ...withBundledPreview(best.artifact, artifacts),
     kind: 'preview',
     title: `Preview · ${best.artifact.title}`,
     preview: best.html,
-  };
+  }, artifacts);
 }
 
 function extractHtmlDocument(raw) {

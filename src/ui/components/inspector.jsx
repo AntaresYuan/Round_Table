@@ -13,6 +13,7 @@ import { LocalLiveThread } from './live-turn';
 import { Thread } from './stage-scene';
 import { sceneAt, meetingNotes } from './roundtable';
 import { liveArtifactsFromTurns } from '../lib/live-scene';
+import { bundlePreviewArtifacts, withBundledPreview } from '../lib/preview-html';
 import { RT } from '../lib/rt';
 import { trpc } from '../lib/trpc';
 
@@ -192,11 +193,12 @@ function InspectorPanel({ tab, setTab, clock, agents, scene, width, onOpenArtifa
   const localArtifacts = hasLocalTurns ? liveArtifactsFromTurns(localTurns, agents, localStatus) : [];
   // P3.2: in live mode show the real chat's artifacts (empty until the orchestrator runs) —
   // never fall back to scripted fixtures, which would contradict the live center stage.
-  const created = hasLocalTurns
+  const rawCreated = hasLocalTurns
     ? localArtifacts
     : live
     ? (liveArtifacts ?? []).map((a) => ({ ...a, version: a.currentVersion, source: a.source ?? 'generated' }))
     : placed.map((p) => p.art);
+  const created = bundlePreviewArtifacts(rawCreated);
   // The fixture "brief" is demo-only — in live mode there are no user-provided artifacts yet.
   const provided = live || hasLocalTurns ? [] : [RT.ARTIFACTS.brief];
   const notes = meetingNotes(clock);
@@ -244,7 +246,7 @@ function InspectorPanel({ tab, setTab, clock, agents, scene, width, onOpenArtifa
           </div>
           {created.length === 0
             ? <div style={{ fontSize: 12.5, color: 'var(--text-faint)', fontStyle: 'italic', padding: '4px 2px' }}>Nothing yet — artifacts land here as the team works.</div>
-            : created.map((a) => <FileRow key={a.id} art={a} agents={agents} onOpen={onOpenArtifact} activeChatId={activeChatId} />)}
+            : created.map((a) => <FileRow key={a.id} art={a} agents={agents} onOpen={(art) => onOpenArtifact(withBundledPreview(art, created))} activeChatId={activeChatId} />)}
         </div>
       ) : tab === 'skills' ? (
         <SkillsPanel authed={authed} activeChatId={activeChatId} context={skillContext} />

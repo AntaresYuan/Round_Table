@@ -8,6 +8,7 @@
    ============================================================================ */
 
 import { agentForArtifact } from './agent-utils';
+import { bundlePreviewArtifacts } from './preview-html';
 
 function latestLiveTurn(liveTurns) {
   const turns = (liveTurns || []).filter((turn) => turn.result || turn.status === 'pending' || turn.status === 'error');
@@ -90,7 +91,7 @@ function liveArtifactsFromTurns(liveTurns, agents, liveStatus) {
   const flattened = turns.flatMap((turn) => normalizeLiveArtifacts(turn.result?.artifacts || [], agents));
   return [
     ...(turns.length > 0 ? [livePlanArtifact(turns, liveStatus)] : []),
-    ...uniqueArtifactsById(flattened),
+    ...bundlePreviewArtifacts(uniqueArtifactsById(flattened)),
   ];
 }
 

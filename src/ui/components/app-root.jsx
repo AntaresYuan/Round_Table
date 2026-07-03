@@ -15,6 +15,7 @@ import { Modal, NewTaskModal, NewWorkbenchModal, AddAgentModal } from './modals'
 import { TopBar, recommendWorkflow, Dock } from './stage-scene';
 import { Drawer, InspectorPanel } from './inspector';
 import { latestLiveTurn, buildLocalScene } from '../lib/live-scene';
+import { withBundledPreview } from '../lib/preview-html';
 import { signOut, useSession } from 'next-auth/react';
 import { trpc } from '@/ui/lib/trpc';
 
@@ -757,11 +758,13 @@ function App() {
       activeLocalTurn?.result?.artifacts,
       (a) => a.kind === 'preview' && (a.preview || '').trim(),
     );
-    if (fromTurn) return fromTurn;
-    return indexFirst(
+    const turnArtifacts = activeLocalTurn?.result?.artifacts || [];
+    if (fromTurn) return withBundledPreview(fromTurn, turnArtifacts);
+    const fromLive = indexFirst(
       liveArtifacts,
       (a) => (a.kind === 'preview' || a.kind === 'html') && (a.preview || a.code || '').trim(),
     );
+    return fromLive ? withBundledPreview(fromLive, liveArtifacts || []) : null;
   }, [activeLocalTurn, liveArtifacts]);
   // Don't keep showing the preview after switching to a run that has none.
   useEffect(() => { if (!centerPreviewArtifact) setCenterPreview(false); }, [centerPreviewArtifact]);
