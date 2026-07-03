@@ -14,6 +14,7 @@ export async function POST(req: Request) {
   try {
     const body = BodySchema.parse(await req.json());
     const actor = await routeActor();
+    if (!actor) throw new Error('unauthorized');
     // Plan only — never dispatch here. A clarification-parked turn returns its
     // questions (answered via POST /clarify); a planned turn returns its plan in
     // the "awaiting approval" state. In both cases the user reviews the plan and

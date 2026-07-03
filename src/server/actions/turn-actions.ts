@@ -42,18 +42,21 @@ import {
 import { describeFindings, hasBlockingFinding, safetyEnabled, scanArtifact, type SafetyFinding } from './safety.js';
 import { AGENT_ROSTER, mentionedAgents, mentionTokens, messageWithoutMentions, type AgentProfile } from './agent-roster.js';
 import { emptyWorkingStyle, getWorkingStyleSnapshot } from './skill-actions.js';
+import { getChat } from './chat-actions.js';
+import { storedWorkspacePath } from './workbench-actions.js';
 
 export type CreateTurnInput = {
   message: string;
   turnId?: string | undefined;
   chatId?: string | undefined;
   workflowTemplateId?: string | undefined;
-  actor?: Actor | null | undefined;
+  actor: Actor;
 };
 
 export type ApprovalInput = {
   turnId: string;
   decision: 'approve' | 'reject';
+  actor: Actor;
   autoDispatch?: boolean | undefined;
   agentAdapter?: string | undefined;
   // When true, kick off dispatch in the background and return immediately with
@@ -64,11 +67,13 @@ export type ApprovalInput = {
 
 export type DispatchInput = {
   turnId: string;
+  actor: Actor;
   agentAdapter?: string | undefined;
 };
 
 export type FinalDeliveryInput = {
   turnId: string;
+  actor: Actor;
   decision: 'accept' | 'repair' | 'tests';
 };
 
@@ -77,6 +82,7 @@ export async function createTurn(input: CreateTurnInput): Promise<TurnResponse> 
   if (!message) throw new ActionError('missing_message', 400);
   const turnId = input.turnId?.trim() || id('turn');
   const chatId = input.chatId?.trim() || null;
+  if (chatId && !await getChat(input.actor, chatId)) throw new ActionError('chat_not_found', 404);
   const workingStyle = await getWorkingStyleSnapshot(input.actor, chatId);
 
   // Clarify gate: the planner judges whether the request is clear enough to plan.
@@ -271,9 +277,9 @@ function buildTurn(opts: {
 export async function answerClarification(input: {
   turnId: string;
   answers: ClarifyAnswer[];
-  actor?: Actor | null | undefined;
+  actor: Actor;
 }): Promise<TurnResponse> {
-  const existing = await getTurn(input.turnId);
+  const existing = await getTurn(input.actor, input.turnId);
   if (!existing) throw new ActionError('turn_not_found', 404);
   if (!existing.needsClarification) throw new ActionError('turn_not_awaiting_clarification', 400);
 
@@ -317,20 +323,20 @@ export async function answerClarification(input: {
   return turnResponse(turnWithWorkflowRun);
 }
 
-export async function listTurns(chatId?: string | undefined): Promise<LocalTurn[]> {
+export async function listTurns(actor: Actor, chatId?: string | undefined): Promise<LocalTurn[]> {
   return mutateData((data) =>
     data.turns
-      .filter((turn) => !chatId || turn.localChatId === chatId)
+      .filter((turn) => turn.ownerId === actor.id && (!chatId || turn.localChatId === chatId))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
   );
 }
 
-export async function getTurn(turnId: string): Promise<LocalTurn | null> {
-  return mutateData((data) => data.turns.find((turn) => turn.id === turnId) ?? null);
+export async function getTurn(actor: Actor, turnId: string): Promise<LocalTurn | null> {
+  return mutateData((data) => data.turns.find((turn) => turn.ownerId === actor.id && turn.id === turnId) ?? null);
 }
 
 export async function approveTurn(input: ApprovalInput): Promise<DispatchResponse> {
-  const turn = await getTurn(input.turnId);
+  const turn = await getTurn(input.actor, input.turnId);
   if (!turn) throw new ActionError('turn_not_found', 404);
   if (input.decision === 'reject') {
     const rejected = await updateTurn(input.turnId, (current) => ({
@@ -389,7 +395,7 @@ export async function approveTurn(input: ApprovalInput): Promise<DispatchRespons
         mission: runningMission ?? current.mission,
         workflowRun: workflowRunForTurn({ ...current, mission: runningMission ?? current.mission }),
       }));
-      void dispatchTurn({ turnId: next.id, agentAdapter: input.agentAdapter }).catch(async (error) => {
+      void dispatchTurn({ actor: input.actor, turnId: next.id, agentAdapter: input.agentAdapter }).catch(async (error) => {
         const message = error instanceof Error ? error.message : 'dispatch_failed';
         await updateTurn(next.id, (current) => ({
           ...current,
@@ -400,13 +406,13 @@ export async function approveTurn(input: ApprovalInput): Promise<DispatchRespons
       });
       return dispatchResponse(requireTurn(runningSynced));
     }
-    return dispatchTurn({ turnId: next.id, agentAdapter: input.agentAdapter });
+    return dispatchTurn({ actor: input.actor, turnId: next.id, agentAdapter: input.agentAdapter });
   }
   return dispatchResponse(next);
 }
 
 export async function dispatchTurn(input: DispatchInput): Promise<DispatchResponse> {
-  const turn = await getTurn(input.turnId);
+  const turn = await getTurn(input.actor, input.turnId);
   if (!turn) throw new ActionError('turn_not_found', 404);
   if (turn.dispatchStatus === 'completed' && turn.dispatch.length > 0) return dispatchResponse(turn);
 
@@ -561,7 +567,7 @@ export async function dispatchTurn(input: DispatchInput): Promise<DispatchRespon
         },
       };
     });
-    const current = await getTurn(turn.id);
+    const current = await getTurn(input.actor, turn.id);
     if (current) {
       const mission = await updateMissionForDispatch(current);
       await updateTurn(turn.id, (latest) => ({
@@ -708,7 +714,9 @@ export async function dispatchTurn(input: DispatchInput): Promise<DispatchRespon
   return dispatchResponse(finalTurn);
 }
 
-export async function interruptTurn(turnId: string): Promise<DispatchResponse> {
+export async function interruptTurn(actor: Actor, turnId: string): Promise<DispatchResponse> {
+  const existing = await getTurn(actor, turnId);
+  if (!existing) throw new ActionError('turn_not_found', 404);
   const turn = await updateTurn(turnId, (current) => ({
     ...current,
     dispatchStatus: 'failed',
@@ -726,7 +734,7 @@ export async function interruptTurn(turnId: string): Promise<DispatchResponse> {
 }
 
 export async function decideTurnFinalDelivery(input: FinalDeliveryInput): Promise<DispatchResponse> {
-  const turn = await getTurn(input.turnId);
+  const turn = await getTurn(input.actor, input.turnId);
   if (!turn) throw new ActionError('turn_not_found', 404);
   if (turn.dispatchStatus !== 'completed') throw new ActionError('delivery_not_ready', 400);
   if (input.decision === 'repair') {
@@ -1319,7 +1327,7 @@ async function workspaceFromChat(chatId: string | null): Promise<string | null> 
   if (!chat) return null;
   const workbench = data.workbenches.find((item) => item.id === chat.workbenchId);
   if (!workbench?.workspacePath) return null;
-  return resolve(workbench.workspacePath);
+  return storedWorkspacePath(workbench);
 }
 
 // Map the scheduler's per-task status onto the WorkflowRun shape the UI reads.

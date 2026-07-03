@@ -74,6 +74,7 @@ describe('Roundtable clean workflow', () => {
     expect(turn.plan.tasks.every((task) => typeof task.parallel === 'boolean')).toBe(true);
 
     const approval = await approveTurn({
+      actor,
       turnId: turn.id,
       decision: 'approve',
       autoDispatch: true,
@@ -89,7 +90,7 @@ describe('Roundtable clean workflow', () => {
     expect(approval.artifacts.find((artifact) => artifact.id.startsWith('task_vera_'))?.preview)
       .toContain('HandoffCard V2');
 
-    const history = await listTurns(chat.id);
+    const history = await listTurns(actor, chat.id);
     expect(history).toHaveLength(1);
     expect(history[0]?.dispatchStatus).toBe('completed');
 
@@ -136,6 +137,7 @@ describe('Roundtable clean workflow', () => {
     expect(parked.needsClarification).toBe(true);
 
     const planned = await answerClarification({
+      actor,
       turnId: parked.id,
       answers: parked.clarifyQuestions.map((q) => ({
         questionId: q.id,
@@ -169,6 +171,7 @@ describe('Roundtable clean workflow', () => {
     expect(review?.title).not.toContain('生成一个镜头测评网站');
 
     await approveTurn({
+      actor,
       turnId: turn.id,
       decision: 'approve',
       autoDispatch: true,
@@ -177,7 +180,7 @@ describe('Roundtable clean workflow', () => {
 
     // After the planner runs, the plan defines the work — downstream tasks get
     // concrete, named titles (no longer "awaiting plan").
-    const after = (await listTurns()).find((t) => t.id === turn.id);
+    const after = (await listTurns(actor)).find((t) => t.id === turn.id);
     const buildAfter = after?.plan.tasks.find((task) => task.role === 'implementer');
     const reviewAfter = after?.plan.tasks.find((task) => task.role === 'reviewer');
     expect(buildAfter?.title).not.toMatch(/awaiting plan/i);
@@ -254,6 +257,7 @@ describe('Roundtable clean workflow', () => {
     });
 
     const approval = await approveTurn({
+      actor,
       turnId: turn.id,
       decision: 'approve',
       autoDispatch: true,

@@ -646,17 +646,16 @@ function App() {
   // fallback id. Poll history under the *same* id, or we'd query an empty chat.
   const turnChatId = authed ? activeChatId : localChatId;
   const loadLocalHistory = useCallback(async () => {
+    if (!authed) {
+      setLocalTurns([]);
+      return;
+    }
     if (!turnChatId) return;
     try {
       const res = await fetch(`/api/orchestrator/history?chatId=${turnChatId}`, { cache: 'no-store' });
       const data = await res.json();
       if (!res.ok || !data.ok) return;
       let storedTurns = data.turns || [];
-      if (!authed && storedTurns.length === 0) {
-        const fallbackRes = await fetch('/api/orchestrator/history', { cache: 'no-store' });
-        const fallbackData = await fallbackRes.json();
-        if (fallbackRes.ok && fallbackData.ok) storedTurns = fallbackData.turns || [];
-      }
       const turns = storedTurns.map(storedTurnToLiveTurn);
       setLocalTurns(turns);
       setSelectedLocalTurnId((current) => (
@@ -945,6 +944,10 @@ function App() {
   };
   const createLocalTask = (goal, workflowTemplateId) => {
     setModal(null);
+    if (!authed) {
+      handleSignUp();
+      return;
+    }
     setView('roundtable');
     setInspectorTab('chat');
     setNotesOpen(true);
@@ -965,7 +968,7 @@ function App() {
       }
       return;
     }
-    sendLocalTurn(message, undefined, undefined, workflowTemplateId);
+    handleSignIn();
   };
   const breakoutData = RT.SCRIPT.find((b) => b.kind === 'breakout');
 
@@ -1115,7 +1118,6 @@ function App() {
         if (authed) {
           createWorkbench.mutate({
             name: input.name,
-            workspacePath: `workspaces/${Date.now()}`,
             description: `Created from ${input.workflowId}.`,
           }, {
             onSuccess: (workbench) => {

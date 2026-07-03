@@ -6,8 +6,8 @@ This is a clean Roundtable implementation that keeps the existing frontend and r
 
 - `src/server/actions/*` contains business workflows.
 - tRPC routes, REST route handlers, and the CLI all call the same actions.
-- Data is stored locally in `.roundtable/data.json` by default, or in Postgres
-  when `DATABASE_URL` is configured.
+- Data is stored locally in `.roundtable/data.json` by default, or in normalized
+  Postgres tables when `DATABASE_URL` is configured.
 - `devrt` scenarios verify real product workflows through the CLI action surface.
 
 ## Commands
@@ -25,7 +25,8 @@ corepack pnpm cli workflow smoke --message "Build a waitlist page"
 The action layer still works with the existing `RoundtableData` shape, but the
 production Postgres path now persists each entity into its own table. For local
 prototype work it writes JSON to `.roundtable/data.json`; for shared or larger
-runs, set `DATABASE_URL` and `ROUNDTABLE_STORE_DRIVER=postgres_normalized`:
+runs, set `DATABASE_URL`. `ROUNDTABLE_STORE_DRIVER=postgres_normalized` is the
+production default when a database URL is present:
 
 ```bash
 DATABASE_URL=postgres://roundtable:roundtable@localhost:5432/roundtable \
@@ -112,6 +113,11 @@ fixer output) for secrets and dangerous code; high-severity findings block.
 | `agent-cli` / `claude-cli` / `opencode` | Spawns a local coding CLI in the workspace. | `ROUNDTABLE_ENABLE_EXTERNAL_AGENT=1` |
 | `e2b` | Runs the agent CLI inside an E2B sandbox. Falls back to `local-dispatch` (logged) if the key is missing. | `E2B_API_KEY` |
 | `minimax` | Runs each agent against the real MiniMax chat model (M3/M2.7). Strips `<think>` reasoning; falls back to `local-dispatch` if the key is missing. | `MINIMAX_API_KEY` |
+
+For production, keep local CLI adapters disabled unless workspaces are isolated
+per user. Workbenches default to `ROUNDTABLE_WORKSPACE_ROOT/{ownerId}/{workbenchId}`;
+custom workspace paths are ignored in production unless
+`ROUNDTABLE_ALLOW_CUSTOM_WORKSPACE_PATH=1` is set deliberately.
 
 ```bash
 ROUNDTABLE_AGENT_ADAPTER=local-dispatch corepack pnpm cli workflow smoke --message "Build a waitlist page"

@@ -216,6 +216,9 @@ async function ensureNormalizedPostgresStore(): Promise<void> {
     for (const statement of NORMALIZED_INDEX_STATEMENTS) {
       await getPool().query(statement);
     }
+    for (const statement of NORMALIZED_CONSTRAINT_STATEMENTS) {
+      await getPool().query(statement);
+    }
   })().catch((error: unknown) => {
     normalizedPostgresReady = null;
     throw error;
@@ -391,7 +394,7 @@ const NORMALIZED_TABLE_STATEMENTS = [
 ];
 
 const NORMALIZED_INDEX_STATEMENTS = [
-  'CREATE INDEX IF NOT EXISTS roundtable_users_email_idx ON roundtable_users (store_key, lower(email))',
+  'CREATE UNIQUE INDEX IF NOT EXISTS roundtable_users_email_unique_idx ON roundtable_users (store_key, lower(email))',
   'CREATE INDEX IF NOT EXISTS roundtable_workbenches_owner_idx ON roundtable_workbenches (store_key, owner_id)',
   'CREATE INDEX IF NOT EXISTS roundtable_chats_owner_workbench_idx ON roundtable_chats (store_key, owner_id, workbench_id)',
   'CREATE INDEX IF NOT EXISTS roundtable_messages_chat_created_idx ON roundtable_messages (store_key, chat_id, created_at)',
@@ -403,6 +406,20 @@ const NORMALIZED_INDEX_STATEMENTS = [
   'CREATE INDEX IF NOT EXISTS roundtable_turns_chat_created_idx ON roundtable_turns (store_key, local_chat_id, created_at)',
   'CREATE INDEX IF NOT EXISTS roundtable_missions_chat_created_idx ON roundtable_missions (store_key, chat_id, created_at)',
   'CREATE INDEX IF NOT EXISTS roundtable_missions_status_idx ON roundtable_missions (store_key, status)',
+];
+
+const NORMALIZED_CONSTRAINT_STATEMENTS = [
+  'ALTER TABLE "roundtable_artifacts" DROP CONSTRAINT IF EXISTS "roundtable_artifacts_chat_fk"',
+  normalizedConstraint('roundtable_workbenches_owner_fk', 'roundtable_workbenches', '(store_key, owner_id)', 'roundtable_users', '(store_key, id)'),
+  normalizedConstraint('roundtable_chats_owner_fk', 'roundtable_chats', '(store_key, owner_id)', 'roundtable_users', '(store_key, id)'),
+  normalizedConstraint('roundtable_chats_workbench_fk', 'roundtable_chats', '(store_key, workbench_id)', 'roundtable_workbenches', '(store_key, id)'),
+  normalizedConstraint('roundtable_messages_chat_fk', 'roundtable_messages', '(store_key, chat_id)', 'roundtable_chats', '(store_key, id)'),
+  normalizedConstraint('roundtable_handoffs_chat_fk', 'roundtable_handoffs', '(store_key, chat_id)', 'roundtable_chats', '(store_key, id)'),
+  normalizedConstraint('roundtable_profiles_user_fk', 'roundtable_profiles', '(store_key, user_id)', 'roundtable_users', '(store_key, id)'),
+  normalizedConstraint('roundtable_user_skills_user_fk', 'roundtable_user_skills', '(store_key, user_id)', 'roundtable_users', '(store_key, id)'),
+  normalizedConstraint('roundtable_workbench_pins_user_fk', 'roundtable_workbench_pins', '(store_key, user_id)', 'roundtable_users', '(store_key, id)'),
+  normalizedConstraint('roundtable_workbench_pins_workbench_fk', 'roundtable_workbench_pins', '(store_key, workbench_id)', 'roundtable_workbenches', '(store_key, id)'),
+  normalizedConstraint('roundtable_missions_chat_fk', 'roundtable_missions', '(store_key, chat_id)', 'roundtable_chats', '(store_key, id)'),
 ];
 
 const NORMALIZED_TABLE_SPECS = [
@@ -603,7 +620,11 @@ async function writeNormalizedDataTo(queryable: PgQueryable, data: RoundtableDat
   const normalized = normalizeData(data);
   for (const tableSpec of NORMALIZED_TABLE_SPECS) {
     const spec = tableSpec as NormalizedTableSpec<unknown>;
-    await syncNormalizedRows(queryable, spec, spec.rows(normalized));
+    await upsertNormalizedRows(queryable, spec, spec.rows(normalized));
+  }
+  for (const tableSpec of [...NORMALIZED_TABLE_SPECS].reverse()) {
+    const spec = tableSpec as NormalizedTableSpec<unknown>;
+    await deleteMissingNormalizedRows(queryable, spec, spec.rows(normalized));
   }
 }
 
@@ -615,12 +636,11 @@ async function readNormalizedRows<T>(queryable: PgQueryable, spec: NormalizedTab
   return result.rows.map((row) => row.data);
 }
 
-async function syncNormalizedRows<T>(
+async function upsertNormalizedRows<T>(
   queryable: PgQueryable,
   spec: NormalizedTableSpec<T>,
   rows: T[],
 ): Promise<void> {
-  const rowIds = rows.map((row) => spec.id(row));
   const table = identifier(spec.table);
   const idColumn = identifier(spec.idColumn);
   const columnNames = spec.columns.map((column) => identifier(column.name));
@@ -641,7 +661,16 @@ async function syncNormalizedRows<T>(
       values,
     );
   }
+}
 
+async function deleteMissingNormalizedRows<T>(
+  queryable: PgQueryable,
+  spec: NormalizedTableSpec<T>,
+  rows: T[],
+): Promise<void> {
+  const rowIds = rows.map((row) => spec.id(row));
+  const table = identifier(spec.table);
+  const idColumn = identifier(spec.idColumn);
   if (rowIds.length === 0) {
     await queryable.query(`DELETE FROM ${table} WHERE store_key = $1`, [storeKey()]);
     return;
@@ -661,6 +690,31 @@ function identifier(name: string): string {
   return `"${name.replaceAll('"', '""')}"`;
 }
 
+function normalizedConstraint(
+  constraint: string,
+  table: string,
+  columns: string,
+  targetTable: string,
+  targetColumns: string,
+): string {
+  return `
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = '${constraint}'
+      ) THEN
+        ALTER TABLE ${identifier(table)}
+        ADD CONSTRAINT ${identifier(constraint)}
+        FOREIGN KEY ${columns}
+        REFERENCES ${identifier(targetTable)} ${targetColumns}
+        ON DELETE CASCADE
+        NOT VALID;
+      END IF;
+    END
+    $$`;
+}
+
 function getPool(): PgPool {
   if (!pool) {
     const max = Number(process.env.ROUNDTABLE_POSTGRES_POOL_SIZE || 10);
@@ -678,7 +732,7 @@ function storeDriver(): StoreDriver {
   if (driver === 'postgres_normalized' || driver === 'normalized') return 'postgres_normalized';
   if (driver === 'postgres') return 'postgres';
   if (driver === 'json') return 'json';
-  return process.env.NODE_ENV !== 'test' && Boolean(process.env.DATABASE_URL) ? 'postgres' : 'json';
+  return process.env.NODE_ENV !== 'test' && Boolean(process.env.DATABASE_URL) ? 'postgres_normalized' : 'json';
 }
 
 function useNormalizedPostgresStore(): boolean {

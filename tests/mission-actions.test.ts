@@ -2,8 +2,10 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { createChat } from '../src/server/actions/chat-actions.js';
 import { getMission, getMissionByTurn, listMissions, listWorkflowTemplates } from '../src/server/actions/mission-actions.js';
 import { approveTurn, createTurn, decideTurnFinalDelivery } from '../src/server/actions/turn-actions.js';
+import { createWorkbench } from '../src/server/actions/workbench-actions.js';
 import { resetData } from '../src/server/store.js';
 import type { Actor } from '../src/server/types.js';
 
@@ -57,9 +59,11 @@ describe('Mission P0 migration', () => {
   });
 
   it('creates a Mission from a turn and advances it through dispatch', async () => {
+    const workbench = await createWorkbench(actor, { name: 'Mission test' });
+    const chat = await createChat(actor, { workbenchId: workbench.id, title: 'Mission test' });
     const turn = await createTurn({
       actor,
-      chatId: 'mission-chat',
+      chatId: chat.id,
       message: 'Build a full stack profile settings feature and review it.',
     });
 
@@ -69,16 +73,17 @@ describe('Mission P0 migration', () => {
     expect(turn.plan.tasks[0]?.stageId).toBe('plan');
     expect(turn.plan.tasks.some((task) => task.stageId === 'build')).toBe(true);
 
-    const missionsBefore = await listMissions(actor, 'mission-chat');
+    const missionsBefore = await listMissions(actor, chat.id);
     expect(missionsBefore).toHaveLength(1);
     expect(missionsBefore[0]?.id).toBe(turn.missionId);
     expect(await getMission(actor, turn.missionId)).toMatchObject({ id: turn.missionId });
     expect(await getMissionByTurn(actor, turn.id)).toMatchObject({ id: turn.missionId });
-    expect(await listMissions(otherActor, 'mission-chat')).toHaveLength(0);
+    expect(await listMissions(otherActor, chat.id)).toHaveLength(0);
     expect(await getMission(otherActor, turn.missionId)).toBeNull();
     expect(await getMissionByTurn(otherActor, turn.id)).toBeNull();
 
     const result = await approveTurn({
+      actor,
       turnId: turn.id,
       decision: 'approve',
       autoDispatch: true,
@@ -104,17 +109,17 @@ describe('Mission P0 migration', () => {
     expect(result.workflowRun?.stageStates.build?.seatRuns?.every((seat) => seat.status === 'done')).toBe(true);
     expect(result.mission?.artifactIds.length).toBeGreaterThan(0);
 
-    const testsRequested = await decideTurnFinalDelivery({ turnId: turn.id, decision: 'tests' });
+    const testsRequested = await decideTurnFinalDelivery({ actor, turnId: turn.id, decision: 'tests' });
     expect(testsRequested.mission?.finalDelivery.status).toBe('ready');
     expect(testsRequested.mission?.finalDelivery.recommendation).toBe('review');
     expect(testsRequested.mission?.checkpoints.find((checkpoint) => checkpoint.kind === 'final_delivery_acceptance')?.status)
       .toBe('pending');
     expect(testsRequested.mission?.tasks.some((task) => task.id === `test_final_${turn.id}` && task.stageId === 'review'))
       .toBe(true);
-    const testsRequestedAgain = await decideTurnFinalDelivery({ turnId: turn.id, decision: 'tests' });
+    const testsRequestedAgain = await decideTurnFinalDelivery({ actor, turnId: turn.id, decision: 'tests' });
     expect(testsRequestedAgain.mission?.tasks.filter((task) => task.id === `test_final_${turn.id}`)).toHaveLength(1);
 
-    const repairRequested = await decideTurnFinalDelivery({ turnId: turn.id, decision: 'repair' });
+    const repairRequested = await decideTurnFinalDelivery({ actor, turnId: turn.id, decision: 'repair' });
     expect(repairRequested.mission?.currentStageId).toBe('ship');
     expect(repairRequested.workflowRun?.stageStates.repair?.status).toBe('done');
     expect(repairRequested.mission?.tasks.some((task) => task.id === `repair_final_${turn.id}` && task.status === 'completed'))
@@ -125,23 +130,26 @@ describe('Mission P0 migration', () => {
       .toBe(true);
     expect(repairRequested.mission?.finalDelivery.status).toBe('ready');
     expect(repairRequested.mission?.finalDelivery.confidence).not.toBe('blocked');
-    const repairRequestedAgain = await decideTurnFinalDelivery({ turnId: turn.id, decision: 'repair' });
+    const repairRequestedAgain = await decideTurnFinalDelivery({ actor, turnId: turn.id, decision: 'repair' });
     expect(repairRequestedAgain.mission?.tasks.filter((task) => task.id === `repair_final_${turn.id}`)).toHaveLength(1);
 
-    const accepted = await decideTurnFinalDelivery({ turnId: turn.id, decision: 'accept' });
+    const accepted = await decideTurnFinalDelivery({ actor, turnId: turn.id, decision: 'accept' });
     expect(accepted.mission?.finalDelivery.status).toBe('accepted');
     expect(accepted.mission?.checkpoints.find((checkpoint) => checkpoint.kind === 'final_delivery_acceptance')?.status)
       .toBe('satisfied');
   });
 
   it('produces a concrete checkout delivery artifact for checkout flow requests', async () => {
+    const workbench = await createWorkbench(actor, { name: 'Checkout test' });
+    const chat = await createChat(actor, { workbenchId: workbench.id, title: 'Checkout test' });
     const turn = await createTurn({
       actor,
-      chatId: 'checkout-chat',
+      chatId: chat.id,
       message: 'Implement a checkout flow with cart summary, payment handoff, validation, and post-payment confirmation.',
     });
 
     const result = await approveTurn({
+      actor,
       turnId: turn.id,
       decision: 'approve',
       autoDispatch: true,

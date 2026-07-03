@@ -2,12 +2,15 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { answerClarification, approveTurn, createTurn, interruptTurn } from '../src/server/actions/turn-actions.js';
+import { createChat } from '../src/server/actions/chat-actions.js';
+import { answerClarification, approveTurn, createTurn, interruptTurn, listTurns } from '../src/server/actions/turn-actions.js';
+import { createWorkbench } from '../src/server/actions/workbench-actions.js';
 import { resetData } from '../src/server/store.js';
 import type { Actor } from '../src/server/types.js';
 
 let tempDir = '';
 const actor: Actor = { id: 'test-user', email: 'test@roundtable.local', name: 'Test User' };
+const otherActor: Actor = { id: 'other-user', email: 'other@roundtable.local', name: 'Other User' };
 
 beforeEach(async () => {
   tempDir = await mkdtemp(join(tmpdir(), 'roundtable-turn-'));
@@ -33,9 +36,37 @@ afterEach(async () => {
 });
 
 describe('dispatchTurn — DAG scheduler integration', () => {
+  it('ignores custom workspace paths in production', async () => {
+    const originalNodeEnv = process.env.NODE_ENV;
+    setNodeEnv('production');
+    delete process.env.ROUNDTABLE_ALLOW_CUSTOM_WORKSPACE_PATH;
+    try {
+      const workbench = await createWorkbench(actor, {
+        name: 'Production workspace',
+        workspacePath: '/tmp/roundtable-should-not-use-this',
+      });
+      expect(workbench.workspacePath).toBe(join(tempDir, 'workspaces', actor.id, workbench.id));
+    } finally {
+      setNodeEnv(originalNodeEnv);
+    }
+  });
+
+  it('enforces owner boundaries for turns and chat-linked creation', async () => {
+    const workbench = await createWorkbench(actor, { name: 'Private workbench' });
+    const chat = await createChat(actor, { workbenchId: workbench.id, title: 'Private chat' });
+    const turn = await createTurn({ actor, chatId: chat.id, message: 'Build a private feature.' });
+
+    await expect(approveTurn({ actor: otherActor, turnId: turn.id, decision: 'approve' }))
+      .rejects.toThrow('turn_not_found');
+    await expect(createTurn({ actor: otherActor, chatId: chat.id, message: 'Attach to someone else chat.' }))
+      .rejects.toThrow('chat_not_found');
+    expect(await listTurns(otherActor, chat.id)).toHaveLength(0);
+  });
+
   it('runs a linear plan to completion with per-task stage states (shape, not order)', async () => {
     const turn = await createTurn({ actor, message: 'Build a waitlist page and review it.' });
     const result = await approveTurn({
+      actor,
       turnId: turn.id,
       decision: 'approve',
       autoDispatch: true,
@@ -68,6 +99,7 @@ describe('dispatchTurn — DAG scheduler integration', () => {
 
     const turn = await createTurn({ actor, message: '@atlas build the navbar.' });
     const result = await approveTurn({
+      actor,
       turnId: turn.id,
       decision: 'approve',
       autoDispatch: true,
@@ -92,6 +124,7 @@ describe('dispatchTurn — DAG scheduler integration', () => {
 
     const turn = await createTurn({ actor, message: '@atlas build the navbar.' });
     const result = await approveTurn({
+      actor,
       turnId: turn.id,
       decision: 'approve',
       autoDispatch: true,
@@ -112,6 +145,7 @@ describe('dispatchTurn — DAG scheduler integration', () => {
 
     const turn = await createTurn({ actor, message: 'Build a checkout page and review it.' });
     const result = await approveTurn({
+      actor,
       turnId: turn.id,
       decision: 'approve',
       autoDispatch: true,
@@ -151,11 +185,17 @@ describe('dispatchTurn — DAG scheduler integration', () => {
 
   it('syncs Mission state when a turn is interrupted', async () => {
     const turn = await createTurn({ actor, message: 'Build a waitlist page and review it.' });
-    await approveTurn({ turnId: turn.id, decision: 'approve' });
-    const interrupted = await interruptTurn(turn.id);
+    await approveTurn({ actor, turnId: turn.id, decision: 'approve' });
+    const interrupted = await interruptTurn(actor, turn.id);
 
     expect(interrupted.dispatchStage).toBe('interrupted');
     expect(interrupted.mission?.status).toBe('failed');
     expect(interrupted.workflowRun).not.toBeNull();
   });
 });
+
+function setNodeEnv(value: string | undefined): void {
+  const env = process.env as Record<string, string | undefined>;
+  if (value === undefined) delete env.NODE_ENV;
+  else env.NODE_ENV = value;
+}

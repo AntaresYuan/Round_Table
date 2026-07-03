@@ -1,5 +1,6 @@
 import './load-env.js';
 import { id, mutateData, readData } from '../server/store.js';
+import type { Artifact, Chat, Handoff, LocalTurn, Message, Mission, UserProfile, UserSkill, Workbench, WorkbenchPin } from '../server/types.js';
 
 const targetDriver = process.env.ROUNDTABLE_STORE_DRIVER || 'postgres_normalized';
 
@@ -13,20 +14,170 @@ if (!process.env.DATABASE_URL) {
 
 process.env.ROUNDTABLE_STORE_DRIVER = targetDriver;
 
+const now = new Date().toISOString();
 const marker = {
   id: id('user'),
   email: `smoke-${Date.now()}@roundtable.local`,
   name: 'Postgres Smoke',
-  createdAt: new Date().toISOString(),
+  createdAt: now,
+};
+const workbench: Workbench = {
+  id: id('wb'),
+  ownerId: marker.id,
+  name: 'Smoke Workbench',
+  workspacePath: `.roundtable/workspaces/${marker.id}/smoke`,
+  description: null,
+  createdAt: now,
+  updatedAt: now,
+};
+const chat: Chat = {
+  id: id('chat'),
+  ownerId: marker.id,
+  workbenchId: workbench.id,
+  title: 'Smoke Chat',
+  createdAt: now,
+  updatedAt: now,
+};
+const message: Message = {
+  id: id('msg'),
+  ownerId: marker.id,
+  chatId: chat.id,
+  authorType: 'user',
+  authorId: marker.id,
+  content: 'Smoke message',
+  createdAt: now,
+};
+const artifact: Artifact = {
+  id: id('art'),
+  chatId: `local-${id('turn')}`,
+  kind: 'markdown',
+  title: 'Smoke artifact',
+  ownerAgentId: 'planner',
+  version: 1,
+  uri: 'memory://smoke-artifact',
+  preview: 'Artifact created before a durable chat exists.',
+  code: null,
+  createdAt: now,
+};
+const handoff: Handoff = {
+  id: id('handoff'),
+  ownerId: marker.id,
+  chatId: chat.id,
+  card: { summary: 'Smoke handoff', artifactIds: [artifact.id] },
+  createdAt: now,
+};
+const profile: UserProfile = {
+  userId: marker.id,
+  defaultBrief: 'Smoke profile',
+  defaultSkills: [],
+  notes: 'Smoke profile notes',
+  updatedAt: now,
+};
+const skill: UserSkill = {
+  id: id('skill'),
+  userId: marker.id,
+  key: 'smoke_skill',
+  label: 'Smoke skill',
+  description: 'Smoke skill',
+  scope: 'personal',
+  targetChatId: null,
+  enabled: true,
+  source: 'user',
+  evidence: 'Smoke check',
+  createdAt: now,
+  updatedAt: now,
+};
+const pin: WorkbenchPin = {
+  id: id('pin'),
+  userId: marker.id,
+  workbenchId: workbench.id,
+  content: 'Smoke pin',
+  createdAt: now,
+};
+const turn: LocalTurn = {
+  id: id('turn'),
+  localChatId: null,
+  ownerId: marker.id,
+  missionId: id('mission'),
+  workflowTemplateId: 'standard',
+  message: 'Smoke turn',
+  workingStyle: { skills: [], projectRules: [] },
+  status: 'done',
+  createdAt: now,
+  provider: 'roundtable-local',
+  model: 'smoke',
+  pmMessage: 'Smoke plan ready.',
+  needsClarification: false,
+  clarifyQuestions: [],
+  clarifyAnswers: [],
+  needsApproval: false,
+  approvalStatus: 'approved',
+  approvedAt: now,
+  dispatchStatus: 'not_started',
+  dispatchAdapter: null,
+  dispatchedAt: null,
+  dispatchStage: 'approved',
+  dispatchError: null,
+  dispatchWorkspacePath: null,
+  dispatch: [],
+  artifacts: [artifact],
+  intake: { intentType: 'build', summary: 'Smoke turn', clarity: 'high', risk: 'low' },
+  plan: { summary: 'Smoke plan', tasks: [] },
+  workflow: { id: 'standard', name: 'Standard', stages: [] },
+  workflowRun: null,
+  mission: null,
+  error: null,
+};
+const mission: Mission = {
+  id: turn.missionId,
+  ownerId: marker.id,
+  chatId: chat.id,
+  sourceTurnId: turn.id,
+  goal: 'Smoke mission',
+  status: 'awaiting_approval',
+  workflowTemplateName: 'Standard',
+  workflowTemplateId: 'standard',
+  currentStageId: null,
+  stages: [],
+  tasks: [],
+  checkpoints: [],
+  decisions: [],
+  artifactIds: [artifact.id],
+  workingStyle: { skills: [], projectRules: [] },
+  finalDelivery: {
+    status: 'not_ready',
+    reportArtifactId: null,
+    recommendation: 'review',
+    confidence: 'unknown',
+    testsObserved: false,
+    risks: [],
+  },
+  createdAt: now,
+  updatedAt: now,
 };
 
 await mutateData((data) => {
   data.users.push(marker);
+  data.workbenches.push(workbench);
+  data.chats.push(chat);
+  data.messages.push(message);
+  data.artifacts.push(artifact);
+  data.handoffs.push(handoff);
+  data.profiles.push(profile);
+  data.userSkills.push(skill);
+  data.workbenchPins.push(pin);
+  data.turns.push(turn);
+  data.missions.push(mission);
 });
 
 const data = await readData();
 const found = data.users.some((user) => user.id === marker.id && user.email === marker.email);
 if (!found) throw new Error('Postgres smoke marker was not persisted.');
+if (!data.workbenches.some((item) => item.id === workbench.id)) throw new Error('Workbench marker was not persisted.');
+if (!data.chats.some((item) => item.id === chat.id)) throw new Error('Chat marker was not persisted.');
+if (!data.artifacts.some((item) => item.id === artifact.id && item.chatId.startsWith('local-'))) {
+  throw new Error('Local artifact marker was not persisted.');
+}
 
 process.stdout.write(
   `Postgres smoke check passed with ${targetDriver} store key ${process.env.ROUNDTABLE_STORE_KEY || 'default'}.\n`,

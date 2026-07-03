@@ -13,6 +13,9 @@ export function jsonError(error: unknown): Response {
     return Response.json({ ok: false, error: error.code }, { status: error.status });
   }
   const message = error instanceof Error ? error.message : String(error);
+  if (message === 'unauthorized') {
+    return Response.json({ ok: false, error: message }, { status: 401 });
+  }
   const status = knownClientError(message) ? 400 : 500;
   return Response.json({ ok: false, error: message }, { status });
 }

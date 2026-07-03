@@ -44,6 +44,7 @@ export async function runCliAction(action: string, input: Record<string, unknown
 
   if (action === 'roundtable.turn.approve') {
     const approval = await approveTurn({
+      actor,
       turnId: readString(input, 'turnId'),
       decision: readDecision(input),
       autoDispatch: readBoolean(input, 'autoDispatch', false),
@@ -63,6 +64,7 @@ export async function runCliAction(action: string, input: Record<string, unknown
 
   if (action === 'roundtable.turn.dispatch') {
     const dispatch = await dispatchTurn({
+      actor,
       turnId: readString(input, 'turnId'),
       agentAdapter: optionalString(input, 'agentAdapter'),
     });
@@ -70,7 +72,7 @@ export async function runCliAction(action: string, input: Record<string, unknown
   }
 
   if (action === 'roundtable.history.list') {
-    const turns = await listTurns(optionalString(input, 'chatId'));
+    const turns = await listTurns(actor, optionalString(input, 'chatId'));
     return result({ turns, count: turns.length });
   }
 
@@ -88,12 +90,13 @@ export async function runCliAction(action: string, input: Record<string, unknown
     await createMessage(actor, { chatId: chat.id, content: message });
     const turn = await createTurn({ actor, chatId: chat.id, message });
     const approval = await approveTurn({
+      actor,
       turnId: turn.id,
       decision: 'approve',
       autoDispatch: true,
       agentAdapter: optionalString(input, 'agentAdapter') || 'local-dispatch',
     });
-    const turns = await listTurns(chat.id);
+    const turns = await listTurns(actor, chat.id);
     return result({
       workbench,
       chat,
