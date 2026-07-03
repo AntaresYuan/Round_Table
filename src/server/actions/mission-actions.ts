@@ -14,6 +14,7 @@ import type {
   PlanTask,
   QualityGate,
   QualityGateKind,
+  WorkingStyleSnapshot,
   WorkflowRun,
   WorkflowStage,
   WorkflowStageRunStatus,
@@ -277,6 +278,7 @@ export type CreateMissionInput = {
   turnId: string;
   missionId?: string | undefined;
   goal: string;
+  workingStyle?: WorkingStyleSnapshot | undefined;
   plan: Plan;
   needsClarification: boolean;
   workflowTemplateId?: string | undefined;
@@ -315,6 +317,7 @@ export async function createMission(input: CreateMissionInput): Promise<Mission>
     chatId: input.chatId ?? null,
     sourceTurnId: input.turnId,
     goal: input.goal,
+    workingStyle: input.workingStyle ?? { skills: [], projectRules: [] },
     status: input.needsClarification ? 'awaiting_clarification' : 'awaiting_approval',
     workflowTemplateId: template.id,
     workflowTemplateName: template.name,
@@ -352,6 +355,7 @@ export function buildMissionSnapshot(input: CreateMissionInput): Mission {
     chatId: input.chatId ?? null,
     sourceTurnId: input.turnId,
     goal: input.goal,
+    workingStyle: input.workingStyle ?? { skills: [], projectRules: [] },
     status: input.needsClarification ? 'awaiting_clarification' : 'awaiting_approval',
     workflowTemplateId: template.id,
     workflowTemplateName: template.name,
@@ -726,6 +730,7 @@ function missionFromTurnSnapshot(turn: LocalTurn, template: WorkflowTemplate): M
     chatId: turn.localChatId,
     sourceTurnId: turn.id,
     goal: turn.message,
+    workingStyle: turn.workingStyle ?? { skills: [], projectRules: [] },
     status: missionStatusFromTurn(turn, []),
     workflowTemplateId: template.id,
     workflowTemplateName: template.name,

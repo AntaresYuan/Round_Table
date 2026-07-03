@@ -16,6 +16,14 @@ import {
 } from './actions/memory-actions.js';
 import { getMission, listMissions, listWorkflowTemplates } from './actions/mission-actions.js';
 import { listArtifactsByChat, listHandoffsByChat } from './actions/read-actions.js';
+import {
+  deleteUserSkill,
+  listSuggestedSkills,
+  listUserSkills,
+  recommendedMissionSkills,
+  setUserSkillEnabled,
+  upsertUserSkill,
+} from './actions/skill-actions.js';
 import { createWorkbench, listWorkbenches } from './actions/workbench-actions.js';
 import { createTRPCRouter, protectedProcedure, publicProcedure } from './trpc.js';
 
@@ -80,6 +88,41 @@ const workbenchPinnedRouter = createTRPCRouter({
     .mutation(({ ctx, input }) => unpinWorkbench(ctx.user, input)),
 });
 
+const userSkillsRouter = createTRPCRouter({
+  list: protectedProcedure.query(({ ctx }) => listUserSkills(ctx.user)),
+  suggestions: protectedProcedure.query(({ ctx }) => listSuggestedSkills(ctx.user)),
+  recommended: protectedProcedure
+    .input(z.object({ context: z.string().optional() }).optional())
+    .query(({ input }) => recommendedMissionSkills(input?.context)),
+  upsert: protectedProcedure
+    .input(z.object({
+      key: z.string().min(1),
+      label: z.string().optional(),
+      description: z.string().optional(),
+      source: z.enum(['user', 'observed', 'workspace', 'recommended']).optional(),
+      scope: z.enum(['personal', 'workspace', 'mission']).optional(),
+      targetChatId: z.string().nullable().optional(),
+      evidence: z.string().nullable().optional(),
+      enabled: z.boolean().optional(),
+    }))
+    .mutation(({ ctx, input }) => upsertUserSkill(ctx.user, input)),
+  setEnabled: protectedProcedure
+    .input(z.object({
+      key: z.string().min(1),
+      enabled: z.boolean(),
+      scope: z.enum(['personal', 'workspace', 'mission']).optional(),
+      targetChatId: z.string().nullable().optional(),
+    }))
+    .mutation(({ ctx, input }) => setUserSkillEnabled(ctx.user, input)),
+  delete: protectedProcedure
+    .input(z.object({
+      key: z.string().min(1),
+      scope: z.enum(['personal', 'workspace', 'mission']).optional(),
+      targetChatId: z.string().nullable().optional(),
+    }))
+    .mutation(({ ctx, input }) => deleteUserSkill(ctx.user, input)),
+});
+
 const missionsRouter = createTRPCRouter({
   templates: publicProcedure.query(() => listWorkflowTemplates()),
   list: protectedProcedure
@@ -109,6 +152,7 @@ export const appRouter = createTRPCRouter({
   messages: messagesRouter,
   missions: missionsRouter,
   userProfile: userProfileRouter,
+  userSkills: userSkillsRouter,
   workbenches: workbenchesRouter,
   workbenchPinned: workbenchPinnedRouter,
 });

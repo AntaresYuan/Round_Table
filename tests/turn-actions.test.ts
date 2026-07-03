@@ -2,6 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { createChat } from '../src/server/actions/chat-actions.js';
 import {
   answerClarification,
   approveTurn,
@@ -11,6 +12,7 @@ import {
   listTurns,
 } from '../src/server/actions/turn-actions.js';
 import { saveAgentRuntimeConfig } from '../src/server/actions/runtime-actions.js';
+import { createWorkbench } from '../src/server/actions/workbench-actions.js';
 import { resetData } from '../src/server/store.js';
 import type { Actor } from '../src/server/types.js';
 
@@ -40,9 +42,37 @@ afterEach(async () => {
 });
 
 describe('dispatchTurn — DAG scheduler integration', () => {
+  it('ignores custom workspace paths in production', async () => {
+    const originalNodeEnv = process.env.NODE_ENV;
+    setNodeEnv('production');
+    delete process.env.ROUNDTABLE_ALLOW_CUSTOM_WORKSPACE_PATH;
+    try {
+      const workbench = await createWorkbench(actor, {
+        name: 'Production workspace',
+        workspacePath: '/tmp/roundtable-should-not-use-this',
+      });
+      expect(workbench.workspacePath).toBe(join(tempDir, 'workspaces', actor.id, workbench.id));
+    } finally {
+      setNodeEnv(originalNodeEnv);
+    }
+  });
+
+  it('enforces owner boundaries for turns and chat-linked creation', async () => {
+    const workbench = await createWorkbench(actor, { name: 'Private workbench' });
+    const chat = await createChat(actor, { workbenchId: workbench.id, title: 'Private chat' });
+    const turn = await createTurn({ actor, chatId: chat.id, message: 'Build a private feature.' });
+
+    await expect(approveTurn({ actor: otherActor, turnId: turn.id, decision: 'approve' }))
+      .rejects.toThrow('turn_not_found');
+    await expect(createTurn({ actor: otherActor, chatId: chat.id, message: 'Attach to someone else chat.' }))
+      .rejects.toThrow('chat_not_found');
+    expect(await listTurns(chat.id, { actor: otherActor })).toHaveLength(0);
+  });
+
   it('runs a linear plan to completion with per-task stage states (shape, not order)', async () => {
     const turn = await createTurn({ actor, message: 'Build a waitlist page and review it.' });
     const result = await approveTurn({
+      actor,
       turnId: turn.id,
       decision: 'approve',
       autoDispatch: true,
@@ -74,6 +104,7 @@ describe('dispatchTurn — DAG scheduler integration', () => {
 
     const turn = await createTurn({ actor, message: '@atlas build the navbar.' });
     const result = await approveTurn({
+      actor,
       turnId: turn.id,
       decision: 'approve',
       autoDispatch: true,
@@ -98,6 +129,7 @@ describe('dispatchTurn — DAG scheduler integration', () => {
 
     const turn = await createTurn({ actor, message: '@atlas build the navbar.' });
     const result = await approveTurn({
+      actor,
       turnId: turn.id,
       decision: 'approve',
       autoDispatch: true,
@@ -117,6 +149,7 @@ describe('dispatchTurn — DAG scheduler integration', () => {
 
     const turn = await createTurn({ actor, message: 'Build a checkout page and review it.' });
     const result = await approveTurn({
+      actor,
       turnId: turn.id,
       decision: 'approve',
       autoDispatch: true,
@@ -160,8 +193,8 @@ describe('dispatchTurn — DAG scheduler integration', () => {
 
   it('syncs Mission state when a turn is interrupted', async () => {
     const turn = await createTurn({ actor, message: 'Build a waitlist page and review it.' });
-    await approveTurn({ turnId: turn.id, decision: 'approve' });
-    const interrupted = await interruptTurn(turn.id);
+    await approveTurn({ actor, turnId: turn.id, decision: 'approve' });
+    const interrupted = await interruptTurn(turn.id, { actor });
 
     expect(interrupted.dispatchStage).toBe('interrupted');
     expect(interrupted.mission?.status).toBe('failed');
@@ -171,7 +204,9 @@ describe('dispatchTurn — DAG scheduler integration', () => {
   it('attaches per-task runtime conversation transcripts to listed turns', async () => {
     await configureRuntimeOutput('atlas', 'navbar built');
 
-    const turn = await createTurn({ actor, chatId: 'live-chat', message: '@atlas build the navbar.' });
+    const workbench = await createWorkbench(actor, { name: 'Live transcript test' });
+    const chat = await createChat(actor, { workbenchId: workbench.id, title: 'Live transcripts' });
+    const turn = await createTurn({ actor, chatId: chat.id, message: '@atlas build the navbar.' });
     await approveTurn({
       turnId: turn.id,
       decision: 'approve',
@@ -179,7 +214,7 @@ describe('dispatchTurn — DAG scheduler integration', () => {
       agentAdapter: 'agent-cli',
     });
 
-    const listed = (await listTurns('live-chat', { actor })).find((item) => item.id === turn.id);
+    const listed = (await listTurns(chat.id, { actor })).find((item) => item.id === turn.id);
     const atlasTaskId = turn.plan.tasks.find((task) => task.owner === 'atlas')?.id ?? '';
     const activity = listed?.liveActivity?.[atlasTaskId];
 
@@ -191,19 +226,22 @@ describe('dispatchTurn — DAG scheduler integration', () => {
   });
 
   it('scopes turn reads and mutations to the route actor when provided', async () => {
+    const workbench = await createWorkbench(actor, { name: 'Scoping test' });
+    const chat = await createChat(actor, { workbenchId: workbench.id, title: 'Shared chat' });
     const owned = await createTurn({
       actor,
-      chatId: 'shared-chat',
+      chatId: chat.id,
       message: 'Build a waitlist page and review it.',
     });
+    // Anonymous turns skip the chat-ownership gate (local/CLI convenience).
     const anonymous = await createTurn({
-      chatId: 'shared-chat',
+      chatId: chat.id,
       message: 'Build a public local-only task and review it.',
     });
 
-    expect((await listTurns('shared-chat', { actor })).map((turn) => turn.id)).toEqual([owned.id]);
-    expect((await listTurns('shared-chat', { actor: otherActor }))).toHaveLength(0);
-    expect((await listTurns('shared-chat', { actor: null })).map((turn) => turn.id)).toEqual([anonymous.id]);
+    expect((await listTurns(chat.id, { actor })).map((turn) => turn.id)).toEqual([owned.id]);
+    expect((await listTurns(chat.id, { actor: otherActor }))).toHaveLength(0);
+    expect((await listTurns(chat.id, { actor: null })).map((turn) => turn.id)).toEqual([anonymous.id]);
     expect(await getTurn(owned.id, { actor: otherActor })).toBeNull();
 
     await expect(approveTurn({
@@ -221,4 +259,10 @@ async function configureRuntimeOutput(agentId: string, text: string): Promise<vo
     command: process.execPath,
     args: ['-e', `process.stdout.write(${JSON.stringify(text)})`],
   });
+}
+
+function setNodeEnv(value: string | undefined): void {
+  const env = process.env as Record<string, string | undefined>;
+  if (value === undefined) delete env.NODE_ENV;
+  else env.NODE_ENV = value;
 }

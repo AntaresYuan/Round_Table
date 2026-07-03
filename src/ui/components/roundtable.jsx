@@ -9,7 +9,7 @@
    ============================================================================ */
 import React from 'react';
 import { RT } from '../lib/rt';
-import { Icon, RoleTag, Spinner, tint, alpha } from './primitives';
+import { AgentMark, Icon, RoleTag, Spinner, tint, alpha } from './primitives';
 const { useState, useEffect, useRef, useMemo } = React;
 
 /* ---- layout presets ------------------------------------------------------ */
@@ -519,15 +519,12 @@ function TableBody() {
   );
 }
 
-/* ---- Figure : a Notionists character (CC0, via DiceBear) seated at the table -
+/* ---- Figure : a local portrait mark seated at the table -------------------
    Colored ring = the agent's identity color; keeps the head-glow, ground shadow,
    and the speaking halo. ---------------------------------------------------- */
 function Figure({ agent, isUser, head, size, speaking }) {
   const color = isUser ? '#8076a0' : (agent.color || '#8076a0');
   const d = size;
-  const seed = encodeURIComponent(isUser ? 'you-user' : (agent.id || agent.displayName || 'rt'));
-  const peep = `https://api.dicebear.com/9.x/notionists/svg?seed=${seed}&backgroundColor=transparent`;
-  const off = Math.round(d * 1.28);
   return (
     <div style={{ position: 'relative', width: d, height: d * 1.16, margin: '0 auto' }}>
       {head && <div style={{ position: 'absolute', left: '50%', top: -d * 0.2, transform: 'translateX(-50%)',
@@ -540,8 +537,7 @@ function Figure({ agent, isUser, head, size, speaking }) {
       <div style={{ position: 'absolute', left: '50%', top: 0, transform: 'translateX(-50%)',
         width: d, height: d, borderRadius: '50%', overflow: 'hidden', zIndex: 2, background: 'var(--surface)',
         boxShadow: `0 0 0 ${Math.max(2, d * 0.05)}px var(--surface), 0 0 0 ${Math.max(3, d * 0.075)}px ${alpha(color, 70)}, 0 ${d * 0.08}px ${d * 0.16}px -${d * 0.04}px rgba(40,40,70,.35)` }}>
-        <img src={peep} alt={agent.displayName || ''} width={off} height={off}
-          style={{ position: 'absolute', left: '-14%', top: '-9%', pointerEvents: 'none' }} />
+        <AgentMark agent={agent || { displayName: 'You', color }} size={d} isUser={isUser} />
       </div>
     </div>
   );

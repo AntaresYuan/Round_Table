@@ -15,7 +15,7 @@ import { Modal, NewTaskModal, NewWorkbenchModal, AddAgentModal } from './modals'
 import { TopBar, recommendWorkflow, Dock } from './stage-scene';
 import { Drawer, InspectorPanel } from './inspector';
 import { latestLiveTurn, buildLocalScene } from '../lib/live-scene';
-import { useSession } from 'next-auth/react';
+import { signOut, useSession } from 'next-auth/react';
 import { trpc } from '@/ui/lib/trpc';
 
 const { useState, useEffect, useMemo, useRef, useCallback } = React;
@@ -596,8 +596,17 @@ function App() {
     }
   });
   // P3.2: live chats when signed in; fall back to fixtures for the logged-out demo.
-  const { status: authStatus } = useSession();
+  const { data: session, status: authStatus } = useSession();
   const authed = authStatus === 'authenticated';
+  const handleSignIn = useCallback(() => {
+    window.location.assign(`/signin?callbackUrl=${encodeURIComponent(window.location.href)}`);
+  }, []);
+  const handleSignUp = useCallback(() => {
+    window.location.assign(`/signup?callbackUrl=${encodeURIComponent(window.location.href)}`);
+  }, []);
+  const handleSignOut = useCallback(() => {
+    void signOut({ callbackUrl: window.location.href });
+  }, []);
   const chatsQ = trpc.chats.list.useQuery(undefined, { enabled: authed });
   const workbenchesQ = trpc.workbenches.list.useQuery(undefined, { enabled: authed });
   const [selectedChatId, setSelectedChatId] = useState(null);
@@ -624,6 +633,32 @@ function App() {
     },
   });
   const liveWorkbenches = workbenchesQ.data ?? [];
+  const seededSignupWorkbench = useRef(false);
+  useEffect(() => {
+    if (!authed || !workbenchesQ.isSuccess || liveWorkbenches.length > 0 || seededSignupWorkbench.current) return;
+    let name = '';
+    try {
+      name = window.localStorage.getItem('roundtable.pendingWorkbenchName')?.trim() || '';
+    } catch {
+      name = '';
+    }
+    if (!name) return;
+
+    seededSignupWorkbench.current = true;
+    createWorkbench.mutate({
+      name,
+      description: 'Created during sign up.',
+    }, {
+      onSuccess: (workbench) => {
+        try { window.localStorage.removeItem('roundtable.pendingWorkbenchName'); } catch {}
+        setSelectedWorkbenchId(workbench.id);
+        setSelectedChatId(null);
+      },
+      onError: () => {
+        seededSignupWorkbench.current = false;
+      },
+    });
+  }, [authed, workbenchesQ.isSuccess, liveWorkbenches.length, createWorkbench]);
   const activeChat =
     authed && chatsQ.data && selectedChatId
       ? chatsQ.data.find((c) => c.id === selectedChatId)
@@ -751,6 +786,10 @@ function App() {
   // fallback id. Poll history under the *same* id, or we'd query an empty chat.
   const turnChatId = authed ? activeChatId : localChatId;
   const loadLocalHistory = useCallback(async () => {
+    if (!authed) {
+      setLocalTurns([]);
+      return;
+    }
     if (!turnChatId) return;
     try {
       const params = new URLSearchParams({ chatId: turnChatId });
@@ -1066,6 +1105,10 @@ function App() {
   };
   const createLocalTask = (goal, workflowTemplateId) => {
     setModal(null);
+    if (!authed) {
+      handleSignUp();
+      return;
+    }
     setView('roundtable');
     setInspectorTab('chat');
     setNotesOpen(true);
@@ -1086,13 +1129,15 @@ function App() {
       }
       return;
     }
-    sendLocalTurn(message, undefined, undefined, workflowTemplateId);
+    handleSignIn();
   };
   const breakoutData = RT.SCRIPT.find((b) => b.kind === 'breakout');
 
   return (
     <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-      <TopBar t={t} setTweak={setTweak} view={view} setView={setView} />
+      <TopBar t={t} setTweak={setTweak} view={view} setView={setView}
+        authStatus={authStatus} user={session?.user}
+        onSignIn={handleSignIn} onSignUp={handleSignUp} onSignOut={handleSignOut} />
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
         {railOpen && !compact && <ConversationRail workbench={railWorkbench} workbenches={railWorkbenches}
           tasks={tasks} agents={agents} activeId={authed ? activeChatId : activeLocalTaskId} onPick={authed ? pickChat : pickLocalTurn}
@@ -1197,7 +1242,7 @@ function App() {
                 </div>
                 {notesOpen && !compact && <ResizeHandle onResize={(dx) => setInspectorW((w) => Math.max(300, Math.min(640, w + dx)))} />}
                 {notesOpen && <InspectorPanel tab={inspectorTab} setTab={setInspectorTab} clock={scene.clock} width={compact ? 'min(100vw, 420px)' : inspectorW}
-                  agents={agents} scene={scene} live={authed && !!activeChatId} liveArtifacts={liveArtifacts} liveMessages={liveMessages}
+                  agents={agents} scene={scene} authed={authed} live={authed && !!activeChatId} liveArtifacts={liveArtifacts} liveMessages={liveMessages}
                   liveHandoffs={liveHandoffs} activeChatId={activeChatId}
                   localTurns={activeLocalTurns.length ? activeLocalTurns : localTurns} localStatus={localStatus} onApproveLocalTurn={approveLocalTurn}
                   localTurnActions={{ interrupt: interruptLocalTurn, redispatch: redispatchLocalTurn, discard: discardLocalTurn, clarify: answerLocalClarification, approve: approveLocalTurn, delivery: decideLocalDelivery }}
@@ -1247,7 +1292,6 @@ function App() {
         if (authed) {
           createWorkbench.mutate({
             name: input.name,
-            workspacePath: `workspaces/${Date.now()}`,
             description: `Created from ${input.workflowId}.`,
           }, {
             onSuccess: (workbench) => {

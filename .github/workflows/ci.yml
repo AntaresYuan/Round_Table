@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install
+        run: corepack pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: corepack pnpm typecheck
+
+      - name: Lint
+        run: corepack pnpm lint
+
+      - name: Test
+        run: corepack pnpm test
+
+      - name: Audit
+        run: corepack pnpm audit --audit-level moderate
+
+      - name: Build
+        run: corepack pnpm build
+        env:
+          NEXTAUTH_SECRET: ci-nextauth-secret
+          NEXTAUTH_URL: http://localhost:3000

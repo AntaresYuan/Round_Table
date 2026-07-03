@@ -1,73 +1,124 @@
-# Roundtable Clean Backend
+# Roundtable
 
-This is a clean Roundtable implementation that keeps the existing frontend and replaces the backend with a small action layer.
+Roundtable is a visual multi-agent workbench for planning, running, reviewing,
+and shipping software tasks with a persistent AI squad.
 
-## Shape
+![Roundtable workbench](https://cdn.jsdelivr.net/gh/EdwinjJ1/roundtable@main/docs/assets/readme/roundtable-workbench.png)
 
-- `src/server/actions/*` contains business workflows.
-- tRPC routes, REST route handlers, and the CLI all call the same actions.
-- Data is stored locally in `.roundtable/data.json` by default, or in Postgres
-  when `DATABASE_URL` is configured.
-- `devrt` scenarios verify real product workflows through the CLI action surface.
+## What Is Roundtable?
 
-## Commands
+Roundtable turns a plain-language request into a visible run. A planner breaks
+work into dependent tasks, implementers work in parallel, reviewers gate quality,
+and the final files, diffs, previews, comments, and handoffs stay attached to the
+conversation.
+
+## Highlights
+
+- Persistent agent squad with planner, implementer, reviewer, architect, and
+  fixer roles.
+- Visual roundtable for live runs, handoffs, artifacts, review state, and chat.
+- Dependency-aware scheduler that runs independent tasks in parallel.
+- Bounded review and fixer loop for failed tasks or blocking safety findings.
+- Local JSON storage for prototypes; normalized Postgres for shared runs.
+- Shared server action layer for the Next app, REST routes, tRPC, and CLI.
+
+## Screenshots
+
+![Live roundtable](https://cdn.jsdelivr.net/gh/EdwinjJ1/roundtable@main/docs/assets/readme/live-roundtable.png)
+
+![Parallel plan and artifacts](https://cdn.jsdelivr.net/gh/EdwinjJ1/roundtable@main/docs/assets/readme/parallel-plan-artifacts.png)
+
+## Quick Start
 
 ```bash
 corepack pnpm install
 corepack pnpm dev
+```
+
+Open [http://localhost:3000](http://localhost:3000). If that port is busy, Next
+will print the alternate local URL.
+
+Useful checks:
+
+```bash
 corepack pnpm typecheck
 corepack pnpm test
 corepack pnpm cli workflow smoke --message "Build a waitlist page"
 ```
 
-## Persistence
+## How It Works
 
-The store keeps the existing `RoundtableData` document shape. For local
-prototype work it writes JSON to `.roundtable/data.json`; for shared or larger
-runs, set `DATABASE_URL` and the app will create/use a Postgres table:
+1. The user describes a goal.
+2. The planner turns it into a dependency-aware task plan.
+3. The scheduler runs every unlocked task in parallel waves.
+4. Agents produce files, diffs, previews, review comments, and handoffs.
+5. Safety or review failures create bounded fixer rounds.
+6. The run finishes with artifacts and decisions preserved in the workbench.
+
+## Project Shape
+
+- `src/app/*` contains the Next.js app routes.
+- `src/ui/components/*` contains the roundtable, workflow, chat, gallery, and
+  inspector UI.
+- `src/server/actions/*` contains business workflows shared by tRPC, REST route
+  handlers, and the CLI.
+- `src/server/store.ts` selects local JSON or Postgres persistence.
+- `src/cli/*` contains smoke tests, migration helpers, and local database tools.
+
+## Configuration
+
+### Storage
+
+Roundtable stores data in `.roundtable/data.json` by default. Set
+`DATABASE_URL` to use Postgres. When a database URL is present, the production
+default is the normalized driver:
 
 ```bash
-DATABASE_URL=postgres://roundtable:roundtable@localhost:5432/roundtable pnpm dev
+DATABASE_URL=postgres://roundtable:roundtable@localhost:5432/roundtable \
+ROUNDTABLE_STORE_DRIVER=postgres_normalized \
+corepack pnpm dev
 ```
 
-To migrate existing local data into Postgres:
+For a local Docker-backed database:
 
 ```bash
-DATABASE_URL=postgres://roundtable:roundtable@localhost:5432/roundtable pnpm migrate:postgres
+corepack pnpm db:up
+corepack pnpm db:migrate:local
+corepack pnpm db:smoke:local
+corepack pnpm dev:postgres
 ```
 
-For a local Docker-backed database, use the bundled compose service:
+To migrate existing local JSON data into Postgres:
 
 ```bash
-pnpm db:up
-pnpm db:migrate:local
-pnpm db:smoke:local
-pnpm dev:postgres
+DATABASE_URL=postgres://roundtable:roundtable@localhost:5432/roundtable \
+corepack pnpm migrate:postgres
 ```
 
-The initial Postgres backend stores one `jsonb` document in `roundtable_store`.
-That keeps the current action layer stable; split into relational tables later
-when search, analytics, or high-concurrency collaboration need it.
+### Auth
 
-## Dispatch: DAG scheduler
+Roundtable uses NextAuth. Production sign-in should use Google OAuth with a
+verified Google email. The credentials provider is a local developer fallback.
 
-`dispatchTurn` runs a turn's plan through a topological (Kahn-wave) scheduler
-(`src/server/actions/scheduler.ts`):
+Required production values:
 
-1. **Parallel waves** — every task whose `deps` are all completed runs together
-   (`Promise.allSettled`); the next wave unlocks as deps finish.
-2. **Dependency gating** — a task runs only when it has no deps, or all its deps
-   have completed. Cycles are rejected before anything runs.
-3. **Failure propagation** — a failed task blocks its transitive dependents while
-   independent branches finish.
-4. **Review → fix loop** — an agent error *or* a blocking safety finding turns a
-   task into a failure, which derives a fixer task (bounded by
-   `ROUNDTABLE_MAX_FIX_ROUNDS`, default `2`).
+```bash
+GOOGLE_CLIENT_ID=...
+GOOGLE_CLIENT_SECRET=...
+NEXTAUTH_URL=https://your-domain.com
+NEXTAUTH_SECRET=...
+```
 
-The safety layer (`src/server/actions/safety.ts`) scans every artifact (including
-fixer output) for secrets and dangerous code; high-severity findings block.
+Authorized Google redirect URIs:
 
-## Adapter matrix
+- `http://localhost:3000/api/auth/callback/google`
+- `https://your-domain.com/api/auth/callback/google`
+
+### Agent Adapters
+
+`local-dispatch` is the default deterministic adapter for development and CI.
+Other adapters can run local CLIs, sandboxed E2B sessions, MiniMax, or
+OpenAI-compatible providers.
 
 | `ROUNDTABLE_AGENT_ADAPTER` | Behavior | Requires |
 | --- | --- | --- |
@@ -76,9 +127,11 @@ fixer output) for secrets and dangerous code; high-severity findings block.
 | `e2b` | Runs the agent CLI inside an E2B sandbox. Falls back to `local-dispatch` (logged) if the key is missing. | `E2B_API_KEY` |
 | `minimax` | Runs each agent against the real MiniMax chat model (M3/M2.7). Strips `<think>` reasoning; falls back to `local-dispatch` if the key is missing. | `MINIMAX_API_KEY` |
 
-```bash
-ROUNDTABLE_AGENT_ADAPTER=local-dispatch corepack pnpm cli workflow smoke --message "Build a waitlist page"
-```
+Production workbenches default to
+`ROUNDTABLE_WORKSPACE_ROOT/{ownerId}/{workbenchId}`. Custom workspace paths are
+ignored in production unless `ROUNDTABLE_ALLOW_CUSTOM_WORKSPACE_PATH=1` is set
+deliberately.
 
-Relevant env vars: `ROUNDTABLE_AGENT_ADAPTER`, `ROUNDTABLE_MAX_FIX_ROUNDS`,
-`ROUNDTABLE_SAFETY_ENABLED`, `E2B_API_KEY` (see `.env.example`).
+## Tech Stack
+
+Next.js, React, tRPC, NextAuth, Vitest, Postgres, and pnpm.

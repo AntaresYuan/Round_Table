@@ -13,6 +13,7 @@ export async function POST(req: Request) {
   try {
     const body = BodySchema.parse(await req.json());
     const actor = await routeActor();
+    if (!actor) throw new Error('unauthorized');
     // From the web client, always run dispatch in the background so the approve
     // call returns immediately and the UI can poll live per-agent progress.
     return Response.json(await approveTurn({ ...body, actor, background: true }));

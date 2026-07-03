@@ -49,21 +49,63 @@ function Icon({ name, size = 16, style }) {
 }
 
 /* ---- Avatar --------------------------------------------------------------- */
-// Agent figures are Notionists characters (DiceBear, CC0) seeded by agent id, so each
-// teammate is a consistent little person. The agent's color stays as the ring = identity.
-function Avatar({ agent, size = 28, ring = true, dim = false }) {
-  const seed = encodeURIComponent(agent.id || agent.displayName || 'rt');
-  const peep = `https://api.dicebear.com/9.x/notionists/svg?seed=${seed}&backgroundColor=transparent`;
-  const off = Math.round(size * 1.28);
+const AGENT_AVATARS = {
+  orchestrator: '/avatars/planning.png',
+  planning: '/avatars/planning.png',
+  planner: '/avatars/planning.png',
+  mira: '/avatars/mira.png',
+  pm: '/avatars/mira.png',
+  atlas: '/avatars/atlas.png',
+  beam: '/avatars/beam.png',
+  vera: '/avatars/vera.png',
+  reviewer: '/avatars/vera.png',
+  nova: '/avatars/nova.png',
+  architect: '/avatars/nova.png',
+  fixer: '/avatars/fixer.png',
+  you: '/avatars/you.png',
+  'you-user': '/avatars/you.png',
+  user: '/avatars/you.png',
+};
+
+function avatarSrcFor(agent = {}, isUser = false) {
+  if (isUser) return AGENT_AVATARS.you;
+  const keys = [
+    agent.agentId, agent.id, agent.mention, agent.displayName, agent.role,
+  ].filter(Boolean).map((v) => String(v).toLowerCase());
+  const key = keys.find((v) => AGENT_AVATARS[v]);
+  return key ? AGENT_AVATARS[key] : null;
+}
+
+function AgentMark({ agent = {}, size = 28, isUser = false }) {
+  const src = avatarSrcFor(agent, isUser);
+  if (src) {
+    return (
+      <img src={src} alt="" width={size} height={size}
+        style={{ width: size, height: size, objectFit: 'cover', display: 'block', pointerEvents: 'none' }} />
+    );
+  }
+
+  const label = (agent.displayName || agent.id || 'RT').slice(0, 1).toUpperCase();
+  return (
+    <svg width={size} height={size} viewBox="0 0 64 64" aria-hidden="true" style={{ display: 'block' }}>
+      <rect width="64" height="64" rx="32" fill="var(--surface-2)" />
+      <circle cx="32" cy="24" r="11" fill="var(--text-faint)" opacity=".45" />
+      <path d="M14 58c2.5-12 9-18 18-18s15.5 6 18 18" fill="var(--text-faint)" opacity=".28" />
+      <text x="32" y="36" textAnchor="middle" fontFamily="var(--font-ui)" fontSize="22" fontWeight="700"
+        fill="var(--text-muted)">{label}</text>
+    </svg>
+  );
+}
+
+function Avatar({ agent = {}, size = 28, ring = true, dim = false }) {
   return (
     <div style={{
       width: size, height: size, borderRadius: '50%', flexShrink: 0, overflow: 'hidden',
       position: 'relative', background: dim ? 'var(--surface-3)' : 'var(--surface)',
-      boxShadow: ring ? `0 0 0 1.5px ${dim ? 'var(--border-strong)' : alpha(agent.color, 55)} inset` : 'none',
+      boxShadow: ring ? `0 0 0 1.5px ${dim ? 'var(--border-strong)' : alpha(agent.color || '#8076a0', 55)} inset` : 'none',
       filter: dim ? 'grayscale(.6) opacity(.7)' : 'none',
     }}>
-      <img src={peep} alt={agent.displayName || ''} width={off} height={off}
-        style={{ position: 'absolute', left: '-14%', top: '-9%', pointerEvents: 'none' }} />
+      <AgentMark agent={agent} size={size} />
     </div>
   );
 }
@@ -183,6 +225,6 @@ function Chip({ children, onClick, color, active, style }) {
 }
 
 export {
-  tint, alpha, Icon, Avatar, RoleTag, StatusGlyph, Spinner, Md, mdInline,
+  tint, alpha, Icon, Avatar, AgentMark, RoleTag, StatusGlyph, Spinner, Md, mdInline,
   useTypewriter, Chip,
 };

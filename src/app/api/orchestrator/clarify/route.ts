@@ -19,6 +19,7 @@ export async function POST(req: Request) {
   try {
     const body = BodySchema.parse(await req.json());
     const actor = await routeActor();
+    if (!actor) throw new Error('unauthorized');
     return Response.json(await answerClarification({ ...body, actor }));
   } catch (error) {
     return jsonError(error);
