@@ -81,6 +81,32 @@ function liveArtifactsFromTurns(liveTurns, agents, liveStatus) {
   ];
 }
 
+// Project each task's live runtime transcript onto its agent: the latest
+// transcript entry becomes the seat's "now doing" bubble on the roundtable
+// (tool use → working, thinking → thinking, response → speaking). Only tasks
+// that are actually running get a bubble; finished transcripts would read as
+// stale chatter.
+function workByAgent(liveActivity, tasks, agents) {
+  const work = {};
+  for (const [taskId, activity] of Object.entries(liveActivity || {})) {
+    if (!activity || activity.status !== 'running') continue;
+    const task = (tasks || []).find((item) => item.id === taskId);
+    const agentId = agents[activity.agentId] ? activity.agentId : task?.owner;
+    if (!agentId) continue;
+    const entries = activity.transcript || [];
+    const latest = entries[entries.length - 1] || null;
+    const tool = latest?.kind === 'status' ? latest.content.replace(/^Using\s+/i, '') : null;
+    work[agentId] = {
+      taskId,
+      mode: !latest ? 'starting' : latest.kind === 'thinking' ? 'thinking' : latest.kind === 'status' ? 'working' : 'speaking',
+      text: latest ? latest.content : 'Starting up…',
+      tool,
+      steps: entries.length,
+    };
+  }
+  return work;
+}
+
 function buildLocalScene(baseScene, liveTurns, agents) {
   const latest = latestLiveTurn(liveTurns);
   if (!latest) return baseScene;
@@ -115,11 +141,19 @@ function buildLocalScene(baseScene, liveTurns, agents) {
     return { ...task, owner: owner.agentId, status: taskStatus };
   });
 
+  const work = workByAgent(result?.liveActivity, liveTasks, agents);
+  // A live transcript is a stronger signal than the coarse task status: an
+  // agent with a running conversation is thinking/working right now.
+  for (const [agentId, now] of Object.entries(work)) {
+    status[agentId] = now.mode === 'thinking' ? 'thinking' : 'working';
+  }
+
   return {
     ...baseScene,
     live: true,
     started: true,
     planPosted: true,
+    work,
     run: {
       phase: latest.status === 'pending' ? 'planning' : completed ? 'completed' : 'running',
       message: latest.message,

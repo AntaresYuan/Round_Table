@@ -346,7 +346,10 @@ const TRANSCRIPT_KIND_STYLE = {
 // (thinking / tool status / errors) while the agent works, so a running stage
 // shows WHAT the agent is doing instead of a bare "Working…" placeholder —
 // and a failed one shows the actual error output, not just a red chip.
-function LiveTranscriptFeed({ activity, agents }) {
+// `compact` drops the agent name + status from the header: inside a stage card
+// the seat row directly above already shows both, so repeating them made one
+// running stage read "running" three times.
+function LiveTranscriptFeed({ activity, agents, compact }) {
   const scrollRef = useRef(null);
   const entries = activity?.transcript || [];
   useEffect(() => {
@@ -361,15 +364,15 @@ function LiveTranscriptFeed({ activity, agents }) {
   return (
     <div style={{ borderRadius: 'var(--r-sm)', border: `1px solid ${failed ? alpha('var(--bad)', 30) : 'var(--border)'}`,
       background: 'var(--surface-2)', overflow: 'hidden' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '6px 10px',
+      <div style={{ display: 'flex', alignItems: 'center', gap: 7, padding: compact ? '4px 10px' : '6px 10px',
         borderBottom: '1px solid var(--border)' }}>
-        <Avatar agent={ag} size={18} ring={false} />
-        <span style={{ fontSize: 11.5, fontWeight: 700, color: ag.color }}>{ag.displayName}</span>
+        {!compact && <Avatar agent={ag} size={18} ring={false} />}
+        {!compact && <span style={{ fontSize: 11.5, fontWeight: 700, color: ag.color }}>{ag.displayName}</span>}
         <span className="mono" style={{ fontSize: 10, color: 'var(--text-faint)' }}>{activity.runtime}</span>
         <span style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 10.5,
           fontWeight: 700, color: failed ? 'var(--bad)' : running ? 'var(--run, var(--accent))' : 'var(--ok)' }}>
           {running && <Spinner size={9} color="var(--run, var(--accent))" />}
-          {activity.status}
+          {!compact && activity.status}
         </span>
       </div>
       <div ref={scrollRef} style={{ maxHeight: 150, overflowY: 'auto', padding: '7px 10px', display: 'grid', gap: 3 }}>
@@ -456,7 +459,7 @@ function StageCard({ stage, stageRun, artifacts, agents, liveActivity }) {
         {(status === 'active' || status === 'failed') && stageActivities.length > 0 && (
           <div style={{ display: 'grid', gap: 6 }}>
             {stageActivities.map(({ taskId, activity }) => (
-              <LiveTranscriptFeed key={taskId} activity={activity} agents={agents} />
+              <LiveTranscriptFeed key={taskId} activity={activity} agents={agents} compact />
             ))}
           </div>
         )}

@@ -672,7 +672,10 @@ function App() {
       ? liveWorkbenches.find((w) => w.id === activeWorkbenchId) ?? null
       : null;
   const localTasks = localTurns.map(turnToTask);
-  const activeLocalTurn = !authed && localTurns.length > 0
+  // Turns exist for signed-in users too (loaded per active chat): the selected
+  // one drives the roundtable scene, so the table shows the REAL run — not the
+  // demo script — whenever there is one.
+  const activeLocalTurn = localTurns.length > 0
     ? (localTurns.find((turn) => turn.id === selectedLocalTurnId) || localTurns[0])
     : null;
   const activeLocalTurns = activeLocalTurn ? [activeLocalTurn] : [];
@@ -710,7 +713,7 @@ function App() {
   const scene = useScene(t.autoplay, t.speed);
   const compact = useMediaQuery('(max-width: 760px)');
   const [decided, setDecided] = useState(false);
-  const localLive = !authed && localTurns.length > 0;
+  const localLive = localTurns.length > 0;
   // Workflow recommendation for the active task (local heuristic; no backend on main).
   const activeTaskTitle = localLive
     ? (turnToTask(activeLocalTurn || localTurns[0] || { message: '' }).title ?? '')
@@ -1189,7 +1192,8 @@ function App() {
                           <RoundtableScene agents={agents} scene={st} onOpenArtifact={setDrawerArt}
                             onAction={onAction} onOpenBreakouts={() => setHubOpen(true)} onSeatClick={(id) => setDmAgent(id)}
                             onOpenFiles={() => { setInspectorTab('files'); setNotesOpen(true); }}
-                            onZoomWhiteboard={() => setZoomWB(true)} wide={!railOpen && !notesOpen} memberIds={memberIds} />
+                            onZoomWhiteboard={() => setZoomWB(true)} wide={!railOpen && !notesOpen} memberIds={memberIds}
+                            activityByAgent={st.work ? Object.fromEntries(Object.entries(st.work).map(([agentId, now]) => [agentId, { now }])) : null} />
                         )}
                         <div style={{ position: 'absolute', top: 14, right: 14, zIndex: 50, display: 'flex', gap: 8 }}>
                           {centerPreviewArtifact && (
