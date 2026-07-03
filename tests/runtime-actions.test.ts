@@ -135,6 +135,30 @@ describe('CLI runtime runner', () => {
     expect(errorEvent && 'message' in errorEvent ? errorEvent.message : '').toContain('Service startup timeout');
   });
 
+  it('fails a runtime only after the idle window has no output', async () => {
+    const result = await executeCliRuntime({
+      conversationId: 'idle-timeout-test',
+      runtime: 'custom-cli',
+      agent: agent('atlas'),
+      config: runtimeConfig('atlas', 'custom-cli', [
+        '-e',
+        [
+          'process.stdout.write("started\\n");',
+          'setTimeout(()=>process.stdout.write("still alive\\n"), 40);',
+          'setInterval(()=>{}, 1_000);',
+        ].join(''),
+      ]),
+      workspace: tempDir,
+      prompt: 'ignored prompt',
+      idleTimeoutMs: 80,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.text).toContain('started');
+    expect(result.text).toContain('still alive');
+    expect(result.error).toContain('runtime_idle_timeout');
+  });
+
   it('parses concatenated OpenCode JSON objects', async () => {
     const result = await executeCliRuntime({
       conversationId: 'opencode-test',

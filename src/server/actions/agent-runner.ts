@@ -184,6 +184,7 @@ async function runAgentCliTask(input: {
       workspace: input.workspace,
       prompt,
       timeoutMs: timeoutMs(),
+      idleTimeoutMs: idleTimeoutMs(),
       envSnapshot: runtimeEnv,
       callbacks: runtimeConversationCallbacks(conversation.id),
       resumeSessionId,
@@ -779,6 +780,11 @@ function splitArgs(raw: string): string[] {
 function timeoutMs(): number | undefined {
   const parsed = Number(process.env.ROUNDTABLE_AGENT_TIMEOUT_MS);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function idleTimeoutMs(): number | undefined {
+  const parsed = Number(process.env.ROUNDTABLE_AGENT_IDLE_TIMEOUT_MS);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 30 * 60 * 1000;
 }
 
 // Optional output ceiling for chat model deliverables. Unset by default: the

@@ -38,6 +38,9 @@ export type RuntimeExecutionInput = {
   workspace: string;
   prompt: string;
   timeoutMs?: number | undefined;
+  // Kill the runtime only when it has produced no stdout/stderr activity for
+  // this long. This is distinct from timeoutMs, which is a total runtime cap.
+  idleTimeoutMs?: number | undefined;
   envSnapshot?: NodeJS.ProcessEnv | undefined;
   callbacks?: RuntimeExecutionCallbacks | undefined;
   // Resume a previous CLI session (claude-code / claude-code-router) so the
@@ -50,6 +53,7 @@ export type RuntimeExecutionInput = {
 };
 
 const activeProcesses = new Map<string, ChildProcessWithoutNullStreams>();
+const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 
 export function stopActiveRuntimeConversation(conversationId: string): boolean {
   const child = activeProcesses.get(conversationId);
@@ -65,7 +69,7 @@ export async function executeCliRuntime(input: RuntimeExecutionInput): Promise<R
   const events: AgentEvent[] = [];
   let stdout = '';
   let stderr = '';
-  let timedOut = false;
+  let timeoutReason: 'total' | 'idle' | null = null;
   const parser = parserForRuntime(input.runtime);
 
   const started: AgentEvent = {
@@ -101,38 +105,52 @@ export async function executeCliRuntime(input: RuntimeExecutionInput): Promise<R
 
   let pending = Promise.resolve();
   child.stdout.on('data', (chunk: string) => {
+    markActivity();
     stdout += chunk;
     pending = pending.then(() => parser.push(chunk, emit));
   });
   child.stderr.on('data', (chunk: string) => {
+    markActivity();
     stderr += chunk;
   });
 
-  const timer = input.timeoutMs
+  const totalTimer = input.timeoutMs
     ? setTimeout(() => {
-        timedOut = true;
+        timeoutReason ??= 'total';
         killProcess(child);
       }, input.timeoutMs)
+    : null;
+  const idleTimeoutMs = input.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
+  let idleTimer = idleTimeoutMs > 0
+    ? setTimeout(() => {
+        timeoutReason ??= 'idle';
+        killProcess(child);
+      }, idleTimeoutMs)
     : null;
 
   const exitCode = await new Promise<number>((resolve, reject) => {
     child.on('error', reject);
     child.on('close', (code) => resolve(code ?? 1));
   });
-  if (timer) clearTimeout(timer);
+  if (totalTimer) clearTimeout(totalTimer);
+  if (idleTimer) clearTimeout(idleTimer);
   activeProcesses.delete(input.conversationId);
   await pending;
   await parser.flush(emit);
 
   const parsedText = parser.text().trim() || stdout.trim() || stderr.trim();
-  const ok = !timedOut && exitCode === 0 && parsedText.length > 0;
+  const ok = !timeoutReason && exitCode === 0 && parsedText.length > 0;
   // On failure the interesting detail is usually on stderr (e.g. "Service
   // startup timeout" from ccr) while stdout only has a banner — keep both.
   const failureText = [parsedText, stderr.trim()]
     .filter((part, index, parts) => part.length > 0 && parts.indexOf(part) === index)
     .join('\n\n');
   const finalText = ok ? parsedText : failureText || parsedText;
-  const error = timedOut ? 'runtime_timeout' : ok ? null : `runtime_exit_${exitCode}`;
+  const error = timeoutReason === 'total'
+    ? 'runtime_timeout'
+    : timeoutReason === 'idle'
+      ? 'runtime_idle_timeout'
+      : ok ? null : `runtime_exit_${exitCode}`;
   const errorDetail = error === null ? null : [error, stderrSummary(stderr)].filter(Boolean).join(': ');
   const terminal: AgentEvent = ok
     ? { type: 'done', finishReason: 'completed' }
@@ -153,7 +171,17 @@ export async function executeCliRuntime(input: RuntimeExecutionInput): Promise<R
 
   async function emit(event: AgentEvent, transcript?: RuntimeTranscriptEntry): Promise<void> {
     events.push(event);
+    if (transcript) markActivity();
     await input.callbacks?.onEvent?.(event, transcript);
+  }
+
+  function markActivity(): void {
+    if (!idleTimer || idleTimeoutMs <= 0) return;
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      timeoutReason ??= 'idle';
+      killProcess(child);
+    }, idleTimeoutMs);
   }
 }
 

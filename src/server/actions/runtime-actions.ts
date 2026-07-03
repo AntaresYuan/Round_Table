@@ -376,6 +376,7 @@ export async function startDirectRuntimeConversation(input: {
     workspace,
     prompt,
     timeoutMs: runtimeTimeoutMs(),
+    idleTimeoutMs: runtimeIdleTimeoutMs(),
     callbacks: runtimeConversationCallbacks(conversation.id),
     resumeSessionId: storedSession ?? undefined,
     sessionScopeId: `direct_${agent.id}`,
@@ -497,4 +498,9 @@ async function runtimeReadiness(
 function runtimeTimeoutMs(): number | undefined {
   const parsed = Number(process.env.ROUNDTABLE_AGENT_TIMEOUT_MS);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function runtimeIdleTimeoutMs(): number | undefined {
+  const parsed = Number(process.env.ROUNDTABLE_AGENT_IDLE_TIMEOUT_MS);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 30 * 60 * 1000;
 }
