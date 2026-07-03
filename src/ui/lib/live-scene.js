@@ -73,11 +73,24 @@ function uniqueTasksById(tasks) {
   return [...byId.values()];
 }
 
+// Each turn's result.artifacts is a full snapshot (backend upserts by id + bumps
+// version), not a delta — so concatenating across turns re-lists every file from
+// every prior turn. Dedupe by id here too, keeping the highest version seen.
+function uniqueArtifactsById(artifacts) {
+  const byId = new Map();
+  for (const artifact of artifacts || []) {
+    const existing = byId.get(artifact.id);
+    if (!existing || (artifact.version ?? 0) >= (existing.version ?? 0)) byId.set(artifact.id, artifact);
+  }
+  return [...byId.values()];
+}
+
 function liveArtifactsFromTurns(liveTurns, agents, liveStatus) {
   const turns = liveTurns || [];
+  const flattened = turns.flatMap((turn) => normalizeLiveArtifacts(turn.result?.artifacts || [], agents));
   return [
     ...(turns.length > 0 ? [livePlanArtifact(turns, liveStatus)] : []),
-    ...turns.flatMap((turn) => normalizeLiveArtifacts(turn.result?.artifacts || [], agents)),
+    ...uniqueArtifactsById(flattened),
   ];
 }
 

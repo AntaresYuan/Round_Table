@@ -747,14 +747,21 @@ function App() {
   // The finished, renderable site for the active run (if any): a preview artifact
   // with HTML content. Drives the center-stage "Preview" toggle.
   const centerPreviewArtifact = useMemo(() => {
-    const fromTurn = activeLocalTurn?.result?.artifacts?.find(
+    // Prefer the homepage over whatever page happens to sit first in the array —
+    // mirrors the backend's `primary` pick in artifactsFromRun.
+    const indexFirst = (list, match) => {
+      const candidates = (list || []).filter(match);
+      return candidates.find((a) => /(^|\/)index\.html?$/i.test(a.title || '')) ?? candidates[0] ?? null;
+    };
+    const fromTurn = indexFirst(
+      activeLocalTurn?.result?.artifacts,
       (a) => a.kind === 'preview' && (a.preview || '').trim(),
     );
     if (fromTurn) return fromTurn;
-    const fromLive = (liveArtifacts || []).find(
+    return indexFirst(
+      liveArtifacts,
       (a) => (a.kind === 'preview' || a.kind === 'html') && (a.preview || a.code || '').trim(),
     );
-    return fromLive || null;
   }, [activeLocalTurn, liveArtifacts]);
   // Don't keep showing the preview after switching to a run that has none.
   useEffect(() => { if (!centerPreviewArtifact) setCenterPreview(false); }, [centerPreviewArtifact]);

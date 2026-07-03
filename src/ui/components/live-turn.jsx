@@ -296,7 +296,9 @@ function LocalLiveTurn({ turn, agents, turnActions, showPreview }) {
 }
 
 function previewArtifactFor(artifacts, agents) {
-  const explicit = (artifacts || []).find((artifact) => artifact.kind === 'preview' && artifact.preview);
+  const previews = (artifacts || []).filter((artifact) => artifact.kind === 'preview' && artifact.preview);
+  // Prefer the homepage over whatever page happened to be scanned/listed first.
+  const explicit = previews.find((artifact) => /(^|\/)index\.html?$/i.test(artifact.title || '')) ?? previews[0];
   if (explicit) return explicit;
   const candidates = (artifacts || [])
     .map((artifact, index) => {
