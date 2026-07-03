@@ -180,6 +180,10 @@ export type AgentRuntimeConversation = {
   events: AgentEvent[];
   transcript: AgentRuntimeTranscriptEntry[];
   error: string | null;
+  // CLI-native session id (claude session_id / codex thread_id / opencode
+  // sessionID) captured from the run, when the runtime reported one. Optional:
+  // records predate this field.
+  sessionId?: string | null;
 };
 
 export type ModelProviderKind = 'minimax' | 'openai-compatible';
@@ -464,7 +468,16 @@ export type Mission = {
   id: string;
   ownerId: string | null;
   chatId: string | null;
+  // The turn that most recently (re)defined this mission's plan.
   sourceTurnId: string;
+  // Every turn that has contributed to the mission, oldest first. A chat's
+  // follow-up turns continue one mission instead of spawning siblings.
+  // Optional: records created before cross-turn continuity carry only
+  // sourceTurnId.
+  turnIds?: string[];
+  // Standalone missions (question turns) never become — or continue — the
+  // chat's ongoing mission.
+  standalone?: boolean;
   goal: string;
   workingStyle: WorkingStyleSnapshot;
   status: MissionStatus;

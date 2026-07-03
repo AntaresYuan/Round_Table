@@ -1,4 +1,4 @@
-import { mutateData, readData } from '../../store.js';
+import { mutateData, nowIso, readData } from '../../store.js';
 import type { Actor, LocalTurn, TurnLiveActivity } from '../../types.js';
 import { removeWorkspace } from '../workspace-cleanup.js';
 import { ActionError } from './errors.js';
@@ -36,19 +36,49 @@ export async function deleteTurn(turnId: string, access?: TurnAccess | undefined
   if (!turn) throw new ActionError('turn_not_found', 404);
   await mutateData((data) => {
     data.turns = data.turns.filter((item) => item.id !== turnId);
-    data.missions = data.missions.filter((mission) => mission.sourceTurnId !== turnId);
+    // A mission can span several turns of a chat. Deleting its only turn
+    // deletes the mission; otherwise the mission survives with the turn
+    // removed from its history (its plan re-syncs on the next dispatch).
+    let missionDeleted = false;
+    data.missions = data.missions.flatMap((mission) => {
+      const turnIds = mission.turnIds?.length ? mission.turnIds : [mission.sourceTurnId];
+      if (mission.id !== turn.missionId && !turnIds.includes(turnId)) return [mission];
+      const remaining = turnIds.filter((item) => item !== turnId);
+      if (remaining.length === 0) {
+        missionDeleted = true;
+        return [];
+      }
+      return [{
+        ...mission,
+        turnIds: remaining,
+        sourceTurnId: mission.sourceTurnId === turnId ? remaining[remaining.length - 1]! : mission.sourceTurnId,
+        updatedAt: nowIso(),
+      }];
+    });
     // Turn-scoped artifacts carry ids of the form `${taskId}_${turnId}`; the
     // local (chat-less) flow also parents them under the synthetic chat id.
     data.artifacts = data.artifacts.filter((artifact) =>
       !artifact.id.endsWith(`_${turnId}`) && artifact.chatId !== `local-${turnId}`,
     );
-    data.handoffs = data.handoffs.filter((handoff) =>
-      handoff.card?.missionId !== turn.missionId && handoff.chatId !== `local-${turnId}`,
-    );
+    // Handoff cards are per-turn (card.turnId); sweep the whole mission's
+    // handoffs only when the mission itself is gone (covers older cards that
+    // predate the turnId field).
+    data.handoffs = data.handoffs.filter((handoff) => {
+      if (handoff.chatId === `local-${turnId}`) return false;
+      if (handoff.card?.['turnId'] === turnId) return false;
+      const cardId = typeof handoff.card?.['id'] === 'string' ? handoff.card['id'] as string : '';
+      if (cardId === `handoff-${turnId}` || cardId.startsWith(`handoff-${turnId}-`)) return false;
+      return !(missionDeleted && handoff.card?.['missionId'] === turn.missionId);
+    });
   });
   // Files go after the store commit so a failed deletion never leaves a
-  // half-deleted session pointing at a vanished workspace.
-  await removeWorkspace(turn.dispatchWorkspacePath);
+  // half-deleted session pointing at a vanished workspace. The workspace is
+  // chat-scoped: only remove it when no surviving turn still works in it.
+  if (turn.dispatchWorkspacePath) {
+    const remaining = await readData();
+    const workspaceShared = remaining.turns.some((item) => item.dispatchWorkspacePath === turn.dispatchWorkspacePath);
+    if (!workspaceShared) await removeWorkspace(turn.dispatchWorkspacePath);
+  }
   return { id: turnId };
 }
 

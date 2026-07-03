@@ -225,7 +225,7 @@ export async function dispatchTurn(input: DispatchInput): Promise<DispatchRespon
     let result;
     let fallbackNote: AgentEvent | null = null;
     try {
-      result = await runAgentTask({ adapter, workspace, task: effectiveTask, message: turn.message, turnId: turn.id, handoffContext, runtimeEnv });
+      result = await runAgentTask({ adapter, workspace, task: effectiveTask, message: turn.message, turnId: turn.id, chatId: turn.localChatId, handoffContext, runtimeEnv });
     } catch (error) {
       // Opt-in adapter unavailable (E2B / MiniMax / OpenAI-compatible): fall back
       // to local-dispatch in this layer (not silently inside the adapter). The
@@ -240,7 +240,7 @@ export async function dispatchTurn(input: DispatchInput): Promise<DispatchRespon
           type: 'thinking_delta',
           delta: `${error.name} (${error.message}); fell back to local-dispatch.`,
         };
-        result = await runAgentTask({ adapter: 'local-dispatch', workspace, task: effectiveTask, message: turn.message, turnId: turn.id, handoffContext, runtimeEnv });
+        result = await runAgentTask({ adapter: 'local-dispatch', workspace, task: effectiveTask, message: turn.message, turnId: turn.id, chatId: turn.localChatId, handoffContext, runtimeEnv });
       } else {
         throw error;
       }

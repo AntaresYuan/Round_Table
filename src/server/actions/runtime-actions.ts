@@ -31,6 +31,12 @@ import {
   type RuntimeExecutionCallbacks,
   type RuntimeTranscriptEntry,
 } from './cli-runtimes/runner.js';
+import {
+  clearCliSession,
+  cliSessionFor,
+  runtimeSupportsResume,
+  saveCliSession,
+} from './cli-runtimes/sessions.js';
 import { probeRuntime, type RuntimeProbe } from './cli-runtimes/probe.js';
 
 export type RuntimeState = {
@@ -268,6 +274,7 @@ export async function createRuntimeConversation(input: {
     events: [],
     transcript: [],
     error: null,
+    sessionId: null,
   };
   await mutateData((data) => {
     data.agentRuntimeConversations = [conversation, ...data.agentRuntimeConversations].slice(0, 200);
@@ -290,11 +297,13 @@ export async function finishRuntimeConversation(
   conversationId: string,
   status: 'completed' | 'failed' | 'stopped',
   error: string | null,
+  sessionId?: string | null,
 ): Promise<void> {
   const now = nowIso();
   await updateRuntimeConversation(conversationId, {
     status,
     error,
+    ...(sessionId !== undefined ? { sessionId } : {}),
     updatedAt: now,
     finishedAt: now,
   });
@@ -337,6 +346,12 @@ export async function startDirectRuntimeConversation(input: {
     data.agentRuntimeDefaults,
   );
   const workspace = input.workspacePath?.trim() || process.cwd();
+  // Only persist/resume CLI sessions for an explicit workspace: the fallback
+  // cwd is the app source tree, which must not grow session sidecar files.
+  const sessionsEnabled = Boolean(input.workspacePath?.trim());
+  const storedSession = sessionsEnabled && runtimeSupportsResume(runtime)
+    ? await cliSessionFor(workspace, runtime, agent.id)
+    : null;
   const conversation = await createRuntimeConversation({
     agent,
     runtime,
@@ -362,9 +377,18 @@ export async function startDirectRuntimeConversation(input: {
     prompt,
     timeoutMs: runtimeTimeoutMs(),
     callbacks: runtimeConversationCallbacks(conversation.id),
-  }).then((result) => (
-    finishRuntimeConversation(conversation.id, result.ok ? 'completed' : 'failed', result.error)
-  )).catch((error: unknown) => (
+    resumeSessionId: storedSession ?? undefined,
+    sessionScopeId: `direct_${agent.id}`,
+  }).then(async (result) => {
+    if (sessionsEnabled) {
+      // Keep the registry honest: a successful run stores the (possibly forked)
+      // session; a failed resume drops the stale entry so the next message
+      // starts cold instead of failing the same way again.
+      if (result.ok && result.sessionId) await saveCliSession(workspace, runtime, agent.id, result.sessionId);
+      else if (!result.ok && storedSession) await clearCliSession(workspace, runtime, agent.id);
+    }
+    await finishRuntimeConversation(conversation.id, result.ok ? 'completed' : 'failed', result.error, result.sessionId);
+  }).catch((error: unknown) => (
     finishRuntimeConversation(conversation.id, 'failed', error instanceof Error ? error.message : String(error))
   ));
 

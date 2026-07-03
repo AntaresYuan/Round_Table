@@ -11,6 +11,7 @@ import { getChat } from '../chat-actions.js';
 import {
   buildMissionSnapshot,
   createMission,
+  latestMissionForChat,
   selectWorkflowTemplate,
   updateMissionForPlannedTurn,
   workflowRunForTurn,
@@ -45,9 +46,17 @@ export async function createTurn(input: CreateTurnInput): Promise<TurnResponse> 
   // the user answers, then answerClarification() resumes with the enriched goal.
   // A question is answered as-is: interrogating the user about "scope and tech
   // stack" before answering their question is the build pipeline leaking.
-  const assessment = intakeFromMessage(message).intentType === 'question'
+  const intentType = intakeFromMessage(message).intentType;
+  const assessment = intentType === 'question'
     ? { clarity: 1, needsClarification: false, questions: [] }
     : await assessClarity(message);
+  // Cross-turn continuity: a follow-up request in a chat continues the chat's
+  // ongoing mission (revising its plan) instead of stacking a new mission per
+  // message. Questions stay standalone — asking about the work must never
+  // reset the work's plan.
+  const continuedMission = intentType === 'question'
+    ? null
+    : await latestMissionForChat(input.actor?.id ?? null, chatId);
   const now = nowIso();
   if (assessment.needsClarification) {
     const turn = buildTurn({
@@ -59,6 +68,7 @@ export async function createTurn(input: CreateTurnInput): Promise<TurnResponse> 
       needsClarification: true,
       clarifyQuestions: assessment.questions,
       clarifyAnswers: [],
+      missionId: continuedMission?.id,
       workflowTemplateId: input.workflowTemplateId,
       workingStyle,
     });
@@ -90,6 +100,7 @@ export async function createTurn(input: CreateTurnInput): Promise<TurnResponse> 
     ownerId: input.actor?.id ?? null,
     message,
     now,
+    missionId: continuedMission?.id,
     workflowTemplateId: input.workflowTemplateId,
     workingStyle,
   });
@@ -103,6 +114,7 @@ export async function createTurn(input: CreateTurnInput): Promise<TurnResponse> 
     needsClarification: false,
     workflowTemplateId: turn.workflowTemplateId,
     workingStyle,
+    standalone: intentType === 'question',
   });
   const turnWithMission = {
     ...turn,

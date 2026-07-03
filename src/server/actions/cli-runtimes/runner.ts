@@ -14,6 +14,10 @@ export type RuntimeExecutionResult = {
   command: string;
   pid: number | null;
   events: AgentEvent[];
+  // CLI-native session id captured from the runtime's structured output
+  // (claude session_id, codex thread_id, opencode sessionID). Lets the next
+  // task in the same chat resume the conversation instead of starting cold.
+  sessionId: string | null;
 };
 
 export type RuntimeExecutionCallbacks = {
@@ -36,6 +40,13 @@ export type RuntimeExecutionInput = {
   timeoutMs?: number | undefined;
   envSnapshot?: NodeJS.ProcessEnv | undefined;
   callbacks?: RuntimeExecutionCallbacks | undefined;
+  // Resume a previous CLI session (claude-code / claude-code-router) so the
+  // agent keeps its conversation memory across turns in the same chat.
+  resumeSessionId?: string | undefined;
+  // Stable identity for session-affine state (the claude-code-router HOME and
+  // port). Defaults to conversationId, which is per-task; pass the chat id so
+  // consecutive tasks in a chat share the router instance and session store.
+  sessionScopeId?: string | undefined;
 };
 
 const activeProcesses = new Map<string, ChildProcessWithoutNullStreams>();
@@ -137,6 +148,7 @@ export async function executeCliRuntime(input: RuntimeExecutionInput): Promise<R
     command: commandSpec.display,
     pid: child.pid ?? null,
     events,
+    sessionId: parser.sessionId(),
   };
 
   async function emit(event: AgentEvent, transcript?: RuntimeTranscriptEntry): Promise<void> {
@@ -298,8 +310,9 @@ function runtimeModel(
   return '';
 }
 
-function claudePrintArgs(
-  input: RuntimeExecutionInput,
+// Exported for tests: the resume wiring is pure argument construction.
+export function claudePrintArgs(
+  input: Pick<RuntimeExecutionInput, 'runtime' | 'config' | 'prompt' | 'resumeSessionId'>,
   env: NodeJS.ProcessEnv,
   options: { includeModel?: boolean } = {},
 ): string[] {
@@ -307,6 +320,9 @@ function claudePrintArgs(
   const model = includeModel ? runtimeModel(input.runtime, input.config, env) : '';
   const effort = runtimeEffort(input.config, env);
   return [
+    // Resuming forks the stored session, giving the agent its conversation
+    // memory from earlier turns in this chat.
+    ...(input.resumeSessionId ? ['--resume', input.resumeSessionId] : []),
     '-p',
     input.prompt,
     '--output-format',
@@ -370,9 +386,13 @@ async function prepareClaudeCodeRouterConfig(
   const model = env.ROUNDTABLE_CCR_MODEL || env.LLM_MODEL || env.OPENAI_MODEL;
   if (!model) throw new Error(`model_provider_missing_model:${provider}`);
 
-  const home = roundtableCcrHome(input.workspace, input.conversationId);
+  // Scope the router HOME (where claude session state lives) and port by the
+  // chat, not the per-task conversation: session resume only works when the
+  // next task finds the same HOME, and one router instance per chat is enough.
+  const scope = input.sessionScopeId ?? input.conversationId;
+  const home = roundtableCcrHome(input.workspace, scope);
   const configDir = join(home, '.claude-code-router');
-  const port = ccrPortForConversation(input.conversationId);
+  const port = ccrPortForConversation(scope);
   env.HOME = home;
   if (process.platform === 'win32') env.USERPROFILE = home;
 
@@ -467,9 +487,16 @@ type RuntimeParser = {
   push(chunk: string, emit: EmitRuntimeEvent): Promise<void>;
   flush(emit: EmitRuntimeEvent): Promise<void>;
   text(): string;
+  sessionId(): string | null;
 };
 
 type EmitRuntimeEvent = (event: AgentEvent, transcript?: RuntimeTranscriptEntry | undefined) => Promise<void>;
+
+// Side-channel the structured-event handlers write into while parsing: the
+// runtime's own session identity, needed after the run to persist for resume.
+type RuntimeParseMeta = {
+  sessionId: string | null;
+};
 
 function parserForRuntime(runtime: AgentRuntimeKind): RuntimeParser {
   if (runtime === 'claude-code' || runtime === 'claude-code-router') return new JsonLineParser(handleClaudeEvent);
@@ -490,11 +517,16 @@ class PlainParser implements RuntimeParser {
   text(): string {
     return this.chunks.join('');
   }
+
+  sessionId(): string | null {
+    return null;
+  }
 }
 
 class JsonLineParser implements RuntimeParser {
   private buffer = '';
   private texts: string[] = [];
+  private meta: RuntimeParseMeta = { sessionId: null };
 
   constructor(private readonly handle: StructuredEventHandler) {}
 
@@ -514,12 +546,16 @@ class JsonLineParser implements RuntimeParser {
     return this.texts.join('\n');
   }
 
+  sessionId(): string | null {
+    return this.meta.sessionId;
+  }
+
   private async processLine(line: string, emit: EmitRuntimeEvent): Promise<void> {
     const trimmed = line.trim();
     if (!trimmed) return;
     const parsed = parseJsonObject(trimmed);
     if (!parsed) return;
-    const result = await this.handle(parsed, emit);
+    const result = await this.handle(parsed, emit, this.meta);
     if (result) this.texts.push(result);
   }
 }
@@ -527,6 +563,7 @@ class JsonLineParser implements RuntimeParser {
 class JsonObjectParser implements RuntimeParser {
   private buffer = '';
   private texts: string[] = [];
+  private meta: RuntimeParseMeta = { sessionId: null };
 
   constructor(private readonly handle: StructuredEventHandler) {}
 
@@ -535,7 +572,7 @@ class JsonObjectParser implements RuntimeParser {
     const drained = drainJsonObjects(this.buffer);
     this.buffer = drained.rest;
     for (const item of drained.objects) {
-      const result = await this.handle(item, emit);
+      const result = await this.handle(item, emit, this.meta);
       if (result) this.texts.push(result);
     }
   }
@@ -544,7 +581,7 @@ class JsonObjectParser implements RuntimeParser {
     const drained = drainJsonObjects(this.buffer);
     this.buffer = drained.rest;
     for (const item of drained.objects) {
-      const result = await this.handle(item, emit);
+      const result = await this.handle(item, emit, this.meta);
       if (result) this.texts.push(result);
     }
   }
@@ -552,11 +589,27 @@ class JsonObjectParser implements RuntimeParser {
   text(): string {
     return this.texts.join('\n');
   }
+
+  sessionId(): string | null {
+    return this.meta.sessionId;
+  }
 }
 
-type StructuredEventHandler = (event: Record<string, unknown>, emit: EmitRuntimeEvent) => Promise<string | null>;
+type StructuredEventHandler = (
+  event: Record<string, unknown>,
+  emit: EmitRuntimeEvent,
+  meta: RuntimeParseMeta,
+) => Promise<string | null>;
 
-async function handleClaudeEvent(event: Record<string, unknown>, emit: EmitRuntimeEvent): Promise<string | null> {
+async function handleClaudeEvent(
+  event: Record<string, unknown>,
+  emit: EmitRuntimeEvent,
+  meta: RuntimeParseMeta,
+): Promise<string | null> {
+  // Every claude stream-json event carries the session id; when the run was
+  // started with --resume the CLI forks to a NEW id, so always keep the latest.
+  const session = stringProp(event, 'session_id');
+  if (session) meta.sessionId = session;
   const eventType = stringProp(event, 'type');
   if (eventType === 'assistant') {
     const message = objectProp(event, 'message');
@@ -590,8 +643,16 @@ async function handleClaudeEvent(event: Record<string, unknown>, emit: EmitRunti
   return null;
 }
 
-async function handleCodexEvent(event: Record<string, unknown>, emit: EmitRuntimeEvent): Promise<string | null> {
+async function handleCodexEvent(
+  event: Record<string, unknown>,
+  emit: EmitRuntimeEvent,
+  meta: RuntimeParseMeta,
+): Promise<string | null> {
   const eventType = stringProp(event, 'type');
+  if (eventType === 'thread.started') {
+    const thread = stringProp(event, 'thread_id');
+    if (thread) meta.sessionId = thread;
+  }
   if (eventType !== 'item.completed') {
     if (eventType === 'turn.failed') {
       const error = objectProp(event, 'error');
@@ -622,7 +683,15 @@ async function handleCodexEvent(event: Record<string, unknown>, emit: EmitRuntim
   return null;
 }
 
-async function handleOpenCodeEvent(event: Record<string, unknown>, emit: EmitRuntimeEvent): Promise<string | null> {
+async function handleOpenCodeEvent(
+  event: Record<string, unknown>,
+  emit: EmitRuntimeEvent,
+  meta: RuntimeParseMeta,
+): Promise<string | null> {
+  const session = stringProp(event, 'sessionID')
+    || stringProp(objectProp(event, 'part'), 'sessionID')
+    || stringProp(objectProp(event, 'info'), 'id');
+  if (session) meta.sessionId = session;
   const eventType = (stringProp(event, 'type') || '').toLowerCase();
   if (eventType.includes('error')) {
     const message = errorText(event) || 'opencode_error';

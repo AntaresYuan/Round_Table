@@ -26,6 +26,8 @@ export function handoffForTurn(actor: Actor | null | undefined, chatId: string, 
     card: {
       protocolVersion: v2?.protocolVersion ?? 'roundtable.handoff.v1',
       missionId: turn.missionId,
+      // Missions span turns; the turn id is what deleteTurn scopes cleanup by.
+      turnId: turn.id,
       handoffV2: v2,
       id: `handoff-${turn.id}`,
       from: 'orchestrator',
@@ -76,6 +78,7 @@ export function handoffsForTasks(turn: LocalTurn, chatId: string): Handoff[] {
       card: {
         protocolVersion: v2.protocolVersion,
         missionId: turn.missionId,
+        turnId: turn.id,
         handoffV2: v2,
         id: v2.cardId,
         from: v2.fromAgent,

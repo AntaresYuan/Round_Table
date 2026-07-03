@@ -10,6 +10,12 @@ import { OpenAICompatUnavailableError, resolvedOpenAICompatModel, runOnOpenAICom
 import { configuredRuntimeForAgent, mergedRuntimeConfigForAgent } from './cli-runtimes/registry.js';
 import { executeCliRuntime } from './cli-runtimes/runner.js';
 import {
+  clearCliSession,
+  cliSessionFor,
+  runtimeSupportsResume,
+  saveCliSession,
+} from './cli-runtimes/sessions.js';
+import {
   createRuntimeConversation,
   finishRuntimeConversation,
   runtimeConversationCallbacks,
@@ -35,6 +41,9 @@ export async function runAgentTask(input: {
   task: PlanTask;
   message: string;
   turnId?: string | undefined;
+  // Chat the turn belongs to: the scope for CLI session reuse, so consecutive
+  // turns in one chat resume the same CLI conversation.
+  chatId?: string | null | undefined;
   handoffContext?: string | undefined;
   runtimeEnv?: NodeJS.ProcessEnv | undefined;
 }): Promise<AgentRunResult> {
@@ -115,6 +124,7 @@ async function runAgentCliTask(input: {
   task: PlanTask;
   message: string;
   turnId?: string | undefined;
+  chatId?: string | null | undefined;
   handoffContext?: string | undefined;
   runtimeEnv?: NodeJS.ProcessEnv | undefined;
 }): Promise<AgentRunResult> {
@@ -159,7 +169,14 @@ async function runAgentCliTask(input: {
     // Small backdate so a file the CLI writes in the same tick as the spawn is
     // never missed by the post-run mtime scan.
     const startedMs = Date.now() - 2_000;
-    const result = await executeCliRuntime({
+    // Session continuity: resume the chat's stored CLI session for this agent
+    // so the model keeps its conversation memory across turns. Scope state
+    // (router HOME/port) by chat, falling back to turn for chat-less runs.
+    const sessionScope = input.chatId ?? input.turnId ?? input.task.id;
+    const storedSession = runtimeSupportsResume(runtime)
+      ? await cliSessionFor(input.workspace, runtime, agent.id)
+      : null;
+    const runOnce = (resumeSessionId: string | undefined) => executeCliRuntime({
       conversationId: conversation.id,
       runtime,
       agent,
@@ -169,8 +186,25 @@ async function runAgentCliTask(input: {
       timeoutMs: timeoutMs(),
       envSnapshot: runtimeEnv,
       callbacks: runtimeConversationCallbacks(conversation.id),
+      resumeSessionId,
+      sessionScopeId: sessionScope,
     });
+    let result = await runOnce(storedSession ?? undefined);
+    let staleSessionNote: AgentEvent | null = null;
+    // A stored session can expire or vanish (CLI state cleaned, HOME moved). A
+    // failed resume must not brick the chat: drop it and retry cold once.
+    if (!result.ok && storedSession) {
+      await clearCliSession(input.workspace, runtime, agent.id);
+      staleSessionNote = {
+        type: 'thinking_delta',
+        delta: `Resuming CLI session ${storedSession} failed; retried with a fresh session.`,
+      };
+      result = await runOnce(undefined);
+    }
     const ok = result.ok;
+    if (ok && result.sessionId) {
+      await saveCliSession(input.workspace, runtime, agent.id, result.sessionId);
+    }
     const text = ok
       ? result.text
       : `# ${input.task.title}\n\n${runtime} did not produce a usable result.\n\n${result.text}`;
@@ -178,7 +212,7 @@ async function runAgentCliTask(input: {
     const scan = ok
       ? await collectChangedWorkspaceFiles(input.workspace, startedMs)
       : { files: [], skipped: [] };
-    await finishRuntimeConversation(conversation.id, ok ? 'completed' : 'failed', result.error);
+    await finishRuntimeConversation(conversation.id, ok ? 'completed' : 'failed', result.error, result.sessionId);
     return {
       text,
       path,
@@ -188,6 +222,7 @@ async function runAgentCliTask(input: {
       files: scan.files,
       events: [
         ...started,
+        ...(staleSessionNote ? [staleSessionNote] : []),
         {
           type: 'tool_result',
           id: toolId,

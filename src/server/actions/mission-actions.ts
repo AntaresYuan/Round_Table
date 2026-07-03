@@ -282,6 +282,9 @@ export type CreateMissionInput = {
   plan: Plan;
   needsClarification: boolean;
   workflowTemplateId?: string | undefined;
+  // Standalone missions (question turns) are never continued by follow-up
+  // turns and never picked up as the chat's ongoing mission.
+  standalone?: boolean | undefined;
 };
 
 export function listWorkflowTemplates(): WorkflowTemplate[] {
@@ -307,41 +310,57 @@ export function selectWorkflowTemplate(message: string): WorkflowTemplate {
 }
 
 export async function createMission(input: CreateMissionInput): Promise<Mission> {
-  const template = input.workflowTemplateId
-    ? workflowTemplateById(input.workflowTemplateId)
-    : selectWorkflowTemplate(input.goal);
-  const now = nowIso();
-  const mission: Mission = {
-    id: input.missionId ?? id('mission'),
-    ownerId: input.actor?.id ?? input.ownerId ?? null,
-    chatId: input.chatId ?? null,
-    sourceTurnId: input.turnId,
-    goal: input.goal,
-    workingStyle: input.workingStyle ?? { skills: [], projectRules: [] },
-    status: input.needsClarification ? 'awaiting_clarification' : 'awaiting_approval',
-    workflowTemplateId: template.id,
-    workflowTemplateName: template.name,
-    currentStageId: input.needsClarification ? 'clarify' : 'plan',
-    stages: template.stages.map((stage): MissionStage => ({
-      id: stage.id,
-      name: stage.name,
-      status: stage.id === 'intake' ? 'done' : stage.id === (input.needsClarification ? 'clarify' : 'plan') ? 'active' : 'pending',
-      taskIds: taskIdsForStage(stage.id, input.plan.tasks),
-      artifactIds: [],
-      gate: stage.gate,
-    })),
-    tasks: input.plan.tasks.map((task) => missionTaskFromPlanTask(task, 'pending', [])),
-    checkpoints: checkpointsForTemplate(template, input.needsClarification, now),
-    decisions: [],
-    artifactIds: [],
-    finalDelivery: initialFinalDelivery(),
-    createdAt: now,
-    updatedAt: now,
-  };
-  await mutateData((data) => {
+  const fresh = buildMissionSnapshot(input);
+  const saved = await mutateData((data) => {
+    const existing = data.missions.find((item) => item.id === fresh.id);
+    const mission = existing ? continueMission(existing, fresh, input) : fresh;
     data.missions = [mission, ...data.missions.filter((item) => item.id !== mission.id)];
+    return mission;
   });
-  return mission;
+  return saved ?? fresh;
+}
+
+// A follow-up turn CONTINUES the chat's mission instead of spawning a sibling:
+// the new plan replaces the old one (stages, tasks, checkpoints reset for the
+// new work) while the mission keeps its identity and history — createdAt, the
+// accumulated artifacts, the decision log, and the list of contributing turns.
+function continueMission(existing: Mission, fresh: Mission, input: CreateMissionInput): Mission {
+  const turnIds = existing.turnIds?.length ? existing.turnIds : [existing.sourceTurnId];
+  const followUpId = `decision_followup_${input.turnId}`;
+  const isNewTurn = !turnIds.includes(input.turnId);
+  return {
+    ...fresh,
+    id: existing.id,
+    createdAt: existing.createdAt,
+    turnIds: isNewTurn ? [...turnIds, input.turnId] : turnIds,
+    artifactIds: existing.artifactIds,
+    decisions: isNewTurn && !existing.decisions.some((decision) => decision.id === followUpId)
+      ? [
+          ...existing.decisions,
+          {
+            id: followUpId,
+            stageId: 'intake',
+            actor: 'user' as const,
+            summary: `Follow-up request: ${input.goal.slice(0, 160)}`,
+            createdAt: nowIso(),
+          },
+        ]
+      : existing.decisions,
+  };
+}
+
+// The chat's continuing mission: the most recently updated non-standalone
+// mission in the chat. Question turns are standalone, so they neither hijack
+// nor become the chat's ongoing mission.
+export async function latestMissionForChat(
+  ownerId: string | null,
+  chatId: string | null | undefined,
+): Promise<Mission | null> {
+  if (!chatId) return null;
+  const data = await readData();
+  return data.missions
+    .filter((mission) => mission.chatId === chatId && mission.ownerId === ownerId && !mission.standalone)
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0] ?? null;
 }
 
 export function buildMissionSnapshot(input: CreateMissionInput): Mission {
@@ -354,6 +373,8 @@ export function buildMissionSnapshot(input: CreateMissionInput): Mission {
     ownerId: input.actor?.id ?? input.ownerId ?? null,
     chatId: input.chatId ?? null,
     sourceTurnId: input.turnId,
+    turnIds: [input.turnId],
+    ...(input.standalone ? { standalone: true } : {}),
     goal: input.goal,
     workingStyle: input.workingStyle ?? { skills: [], projectRules: [] },
     status: input.needsClarification ? 'awaiting_clarification' : 'awaiting_approval',
@@ -385,7 +406,18 @@ export async function getMission(actor: Actor, missionId: string): Promise<Missi
 
 export async function getMissionByTurn(actor: Actor, turnId: string): Promise<Mission | null> {
   const data = await readData();
-  return data.missions.find((mission) => mission.ownerId === actor.id && mission.sourceTurnId === turnId) ?? null;
+  // A mission can span several turns, so resolve through the turn's own
+  // missionId first; the sourceTurnId/turnIds fallbacks cover older records.
+  const missionId = data.turns.find((turn) => turn.id === turnId && turn.ownerId === actor.id)?.missionId;
+  const byId = missionId
+    ? data.missions.find((mission) => mission.ownerId === actor.id && mission.id === missionId)
+    : null;
+  return byId
+    ?? data.missions.find((mission) =>
+      mission.ownerId === actor.id
+      && (mission.sourceTurnId === turnId || (mission.turnIds ?? []).includes(turnId)),
+    )
+    ?? null;
 }
 
 export async function listMissions(actor: Actor, chatId?: string | undefined): Promise<Mission[]> {
@@ -729,6 +761,7 @@ function missionFromTurnSnapshot(turn: LocalTurn, template: WorkflowTemplate): M
     ownerId: turn.ownerId,
     chatId: turn.localChatId,
     sourceTurnId: turn.id,
+    turnIds: [turn.id],
     goal: turn.message,
     workingStyle: turn.workingStyle ?? { skills: [], projectRules: [] },
     status: missionStatusFromTurn(turn, []),
