@@ -399,6 +399,44 @@ const NORMALIZED_TABLE_STATEMENTS = [
     updated_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (store_key, id)
   )`,
+  `CREATE TABLE IF NOT EXISTS roundtable_agent_runtime_configs (
+    store_key text NOT NULL,
+    agent_id text NOT NULL,
+    runtime text NOT NULL,
+    record_updated_at timestamptz NOT NULL,
+    data jsonb NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (store_key, agent_id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS roundtable_agent_runtime_defaults (
+    store_key text NOT NULL,
+    runtime text NOT NULL,
+    record_updated_at timestamptz NOT NULL,
+    data jsonb NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (store_key, runtime)
+  )`,
+  `CREATE TABLE IF NOT EXISTS roundtable_agent_runtime_conversations (
+    store_key text NOT NULL,
+    id text NOT NULL,
+    agent_id text NOT NULL,
+    turn_id text,
+    task_id text,
+    status text NOT NULL,
+    started_at timestamptz NOT NULL,
+    record_updated_at timestamptz NOT NULL,
+    data jsonb NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (store_key, id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS roundtable_settings (
+    store_key text NOT NULL,
+    id text NOT NULL,
+    record_updated_at timestamptz NOT NULL,
+    data jsonb NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (store_key, id)
+  )`,
 ];
 
 const NORMALIZED_INDEX_STATEMENTS = [
@@ -414,6 +452,7 @@ const NORMALIZED_INDEX_STATEMENTS = [
   'CREATE INDEX IF NOT EXISTS roundtable_turns_chat_created_idx ON roundtable_turns (store_key, local_chat_id, created_at)',
   'CREATE INDEX IF NOT EXISTS roundtable_missions_chat_created_idx ON roundtable_missions (store_key, chat_id, created_at)',
   'CREATE INDEX IF NOT EXISTS roundtable_missions_status_idx ON roundtable_missions (store_key, status)',
+  'CREATE INDEX IF NOT EXISTS roundtable_agent_runtime_conversations_turn_idx ON roundtable_agent_runtime_conversations (store_key, turn_id)',
 ];
 
 const NORMALIZED_CONSTRAINT_STATEMENTS = [
@@ -609,6 +648,66 @@ const NORMALIZED_TABLE_SPECS = [
       { name: 'status', value: (row) => row.status },
       { name: 'workflow_template_id', value: (row) => row.workflowTemplateId },
       { name: 'created_at', value: (row) => row.createdAt },
+      { name: 'record_updated_at', value: (row) => row.updatedAt },
+    ],
+  }),
+  makeTableSpec<AgentRuntimeConfig>({
+    table: 'roundtable_agent_runtime_configs',
+    idColumn: 'agent_id',
+    rows: (data) => data.agentRuntimeConfigs,
+    assign: (data, rows) => {
+      data.agentRuntimeConfigs = rows;
+    },
+    id: (row) => row.agentId,
+    orderBy: 'agent_id ASC',
+    columns: [
+      { name: 'runtime', value: (row) => row.runtime },
+      { name: 'record_updated_at', value: (row) => row.updatedAt },
+    ],
+  }),
+  makeTableSpec<AgentRuntimeDefaultConfig>({
+    table: 'roundtable_agent_runtime_defaults',
+    idColumn: 'runtime',
+    rows: (data) => data.agentRuntimeDefaults,
+    assign: (data, rows) => {
+      data.agentRuntimeDefaults = rows;
+    },
+    id: (row) => row.runtime,
+    orderBy: 'runtime ASC',
+    columns: [
+      { name: 'record_updated_at', value: (row) => row.updatedAt },
+    ],
+  }),
+  makeTableSpec<AgentRuntimeConversation>({
+    table: 'roundtable_agent_runtime_conversations',
+    idColumn: 'id',
+    rows: (data) => data.agentRuntimeConversations,
+    assign: (data, rows) => {
+      data.agentRuntimeConversations = rows;
+    },
+    id: (row) => row.id,
+    // The in-memory list is kept newest-first (runtime-actions prepends);
+    // reads must preserve that so newest-per-task lookups stay correct.
+    orderBy: 'started_at DESC, id DESC',
+    columns: [
+      { name: 'agent_id', value: (row) => row.agentId },
+      { name: 'turn_id', value: (row) => row.turnId },
+      { name: 'task_id', value: (row) => row.taskId },
+      { name: 'status', value: (row) => row.status },
+      { name: 'started_at', value: (row) => row.startedAt },
+      { name: 'record_updated_at', value: (row) => row.updatedAt },
+    ],
+  }),
+  makeTableSpec<RoundtableSettings>({
+    table: 'roundtable_settings',
+    idColumn: 'id',
+    rows: (data) => [data.settings],
+    assign: (data, rows) => {
+      data.settings = rows[0] ?? data.settings;
+    },
+    id: () => 'settings',
+    orderBy: 'id ASC',
+    columns: [
       { name: 'record_updated_at', value: (row) => row.updatedAt },
     ],
   }),

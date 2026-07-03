@@ -1,6 +1,19 @@
 import './load-env.js';
 import { id, mutateData, readData } from '../server/store.js';
-import type { Artifact, Chat, Handoff, LocalTurn, Message, Mission, UserProfile, UserSkill, Workbench, WorkbenchPin } from '../server/types.js';
+import type {
+  AgentRuntimeConfig,
+  AgentRuntimeConversation,
+  Artifact,
+  Chat,
+  Handoff,
+  LocalTurn,
+  Message,
+  Mission,
+  UserProfile,
+  UserSkill,
+  Workbench,
+  WorkbenchPin,
+} from '../server/types.js';
 
 const targetDriver = process.env.ROUNDTABLE_STORE_DRIVER || 'postgres_normalized';
 
@@ -156,6 +169,39 @@ const mission: Mission = {
   updatedAt: now,
 };
 
+const runtimeConfig: AgentRuntimeConfig = {
+  agentId: 'atlas',
+  runtime: 'custom-cli',
+  command: 'echo',
+  args: ['smoke'],
+  env: {},
+  model: null,
+  modelProvider: null,
+  interactionMode: null,
+  effort: null,
+  updatedAt: now,
+};
+const runtimeConversation: AgentRuntimeConversation = {
+  id: id('conv'),
+  agentId: 'atlas',
+  role: 'implementer',
+  runtime: 'custom-cli',
+  title: 'Smoke conversation',
+  turnId: turn.id,
+  taskId: id('task'),
+  workspacePath: workbench.workspacePath,
+  cwd: workbench.workspacePath,
+  command: 'echo smoke',
+  pid: null,
+  status: 'completed',
+  startedAt: now,
+  updatedAt: now,
+  finishedAt: now,
+  error: null,
+  events: [],
+  transcript: [{ at: now, kind: 'response', content: 'smoke' }],
+};
+
 await mutateData((data) => {
   data.users.push(marker);
   data.workbenches.push(workbench);
@@ -168,6 +214,9 @@ await mutateData((data) => {
   data.workbenchPins.push(pin);
   data.turns.push(turn);
   data.missions.push(mission);
+  data.agentRuntimeConfigs.push(runtimeConfig);
+  data.agentRuntimeConversations = [runtimeConversation, ...data.agentRuntimeConversations];
+  data.settings = { ...data.settings, defaultAgentAdapter: 'local-dispatch', updatedAt: now };
 });
 
 const data = await readData();
@@ -177,6 +226,15 @@ if (!data.workbenches.some((item) => item.id === workbench.id)) throw new Error(
 if (!data.chats.some((item) => item.id === chat.id)) throw new Error('Chat marker was not persisted.');
 if (!data.artifacts.some((item) => item.id === artifact.id && item.chatId.startsWith('local-'))) {
   throw new Error('Local artifact marker was not persisted.');
+}
+if (!data.agentRuntimeConfigs.some((item) => item.agentId === runtimeConfig.agentId && item.runtime === 'custom-cli')) {
+  throw new Error('Agent runtime config marker was not persisted.');
+}
+if (!data.agentRuntimeConversations.some((item) => item.id === runtimeConversation.id && item.transcript.length === 1)) {
+  throw new Error('Agent runtime conversation marker was not persisted.');
+}
+if (data.settings.defaultAgentAdapter !== 'local-dispatch') {
+  throw new Error('Settings marker was not persisted.');
 }
 
 process.stdout.write(
