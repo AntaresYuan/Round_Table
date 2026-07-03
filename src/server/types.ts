@@ -140,6 +140,27 @@ export type AgentRuntimeDefaultConfig = {
 
 export type AgentRuntimeConversationStatus = 'running' | 'completed' | 'failed' | 'stopped';
 
+export type AgentRuntimeTranscriptEntry = {
+  at: string;
+  kind: 'status' | 'thinking' | 'response' | 'error';
+  content: string;
+};
+
+// Response-only view of a task's live runtime conversation, attached to turns
+// by listTurns so the polling UI can stream agent activity while a run is hot.
+// Never persisted on the turn itself — conversations remain the source of truth.
+export type TurnTaskActivity = {
+  conversationId: string;
+  agentId: string;
+  runtime: AgentRuntimeKind;
+  status: AgentRuntimeConversationStatus;
+  error: string | null;
+  updatedAt: string;
+  transcript: AgentRuntimeTranscriptEntry[];
+};
+
+export type TurnLiveActivity = Record<string, TurnTaskActivity>;
+
 export type AgentRuntimeConversation = {
   id: string;
   agentId: string;
@@ -157,11 +178,7 @@ export type AgentRuntimeConversation = {
   updatedAt: string;
   finishedAt: string | null;
   events: AgentEvent[];
-  transcript: Array<{
-    at: string;
-    kind: 'status' | 'thinking' | 'response' | 'error';
-    content: string;
-  }>;
+  transcript: AgentRuntimeTranscriptEntry[];
   error: string | null;
 };
 

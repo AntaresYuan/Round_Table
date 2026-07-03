@@ -149,6 +149,7 @@ function storedTurnToLiveTurn(turn) {
             needsClarification: turn.needsClarification,
             clarifyQuestions: turn.clarifyQuestions,
             clarifyAnswers: turn.clarifyAnswers,
+            liveActivity: turn.liveActivity,
           },
         }
       : { error: turn.error || 'orchestrator_turn_failed' }),

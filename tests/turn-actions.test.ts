@@ -88,7 +88,9 @@ describe('dispatchTurn — DAG scheduler integration', () => {
     expect(fixers.length).toBeGreaterThanOrEqual(1);
     expect(fixers.length).toBeLessThanOrEqual(2);
     expect(fixers.every((r) => (r.fixRound ?? 0) <= 2)).toBe(true);
-  }, 10_000);
+    // Spawns ~5 sequential node fixtures; under full-suite CPU contention the
+    // default 10s budget flakes (also on the unmodified baseline).
+  }, 30_000);
 
   it('does not block when safety is disabled', async () => {
     await configureRuntimeOutput('atlas', 'sk-aaaaaaaaaaaaaaaaaaaaaaaa');
@@ -164,6 +166,28 @@ describe('dispatchTurn — DAG scheduler integration', () => {
     expect(interrupted.dispatchStage).toBe('interrupted');
     expect(interrupted.mission?.status).toBe('failed');
     expect(interrupted.workflowRun).not.toBeNull();
+  });
+
+  it('attaches per-task runtime conversation transcripts to listed turns', async () => {
+    await configureRuntimeOutput('atlas', 'navbar built');
+
+    const turn = await createTurn({ actor, chatId: 'live-chat', message: '@atlas build the navbar.' });
+    await approveTurn({
+      turnId: turn.id,
+      decision: 'approve',
+      autoDispatch: true,
+      agentAdapter: 'agent-cli',
+    });
+
+    const listed = (await listTurns('live-chat', { actor })).find((item) => item.id === turn.id);
+    const atlasTaskId = turn.plan.tasks.find((task) => task.owner === 'atlas')?.id ?? '';
+    const activity = listed?.liveActivity?.[atlasTaskId];
+
+    expect(activity).toBeDefined();
+    expect(activity).toMatchObject({ agentId: 'atlas', runtime: 'custom-cli', status: 'completed' });
+    expect(activity?.transcript.some((entry) => entry.kind === 'response' || entry.kind === 'thinking')).toBe(true);
+    // The stored turn itself stays lean: live activity is a response-time view.
+    expect((await getTurn(turn.id))).not.toHaveProperty('liveActivity');
   });
 
   it('scopes turn reads and mutations to the route actor when provided', async () => {

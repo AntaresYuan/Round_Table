@@ -245,6 +245,7 @@ function LocalLiveTurn({ turn, agents, turnActions, showPreview }) {
                 dispatchStatus={turn.result.dispatchStatus}
                 dispatchAdapter={turn.result.dispatchAdapter}
                 workspacePath={turn.result.dispatchWorkspacePath || turn.result.workspacePath}
+                liveActivity={turn.result.dispatchStatus === 'running' ? turn.result.liveActivity : null}
               />
               {running && turnActions && (
                 <LocalStopBar
@@ -270,6 +271,7 @@ function LocalLiveTurn({ turn, agents, turnActions, showPreview }) {
                   artifacts={artifacts}
                   agents={agents}
                   dispatchStatus={turn.result.dispatchStatus}
+                  liveActivity={turn.result.liveActivity}
                 />
               )}
               {(completed || failed || running || interrupted) && !(interrupted && turn.discarded) && (
@@ -333,10 +335,71 @@ function extractHtmlDocument(raw) {
 
 
 
+const TRANSCRIPT_KIND_STYLE = {
+  thinking: { icon: 'sparkle', color: 'var(--text-muted)' },
+  status: { icon: 'wrench', color: 'var(--text-faint)' },
+  response: { icon: 'clip', color: 'var(--text-muted)' },
+  error: { icon: 'x', color: 'var(--bad)' },
+};
+
+// Live per-task activity feed: streams the runtime conversation transcript
+// (thinking / tool status / errors) while the agent works, so a running stage
+// shows WHAT the agent is doing instead of a bare "Working…" placeholder —
+// and a failed one shows the actual error output, not just a red chip.
+function LiveTranscriptFeed({ activity, agents }) {
+  const scrollRef = useRef(null);
+  const entries = activity?.transcript || [];
+  useEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  }, [entries.length]);
+  if (!activity) return null;
+  const ag = agents[activity.agentId]
+    || Object.values(agents).find((a) => a.agentId === activity.agentId)
+    || agents.orchestrator;
+  const running = activity.status === 'running';
+  const failed = activity.status === 'failed';
+  return (
+    <div style={{ borderRadius: 'var(--r-sm)', border: `1px solid ${failed ? alpha('var(--bad)', 30) : 'var(--border)'}`,
+      background: 'var(--surface-2)', overflow: 'hidden' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '6px 10px',
+        borderBottom: '1px solid var(--border)' }}>
+        <Avatar agent={ag} size={18} ring={false} />
+        <span style={{ fontSize: 11.5, fontWeight: 700, color: ag.color }}>{ag.displayName}</span>
+        <span className="mono" style={{ fontSize: 10, color: 'var(--text-faint)' }}>{activity.runtime}</span>
+        <span style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 10.5,
+          fontWeight: 700, color: failed ? 'var(--bad)' : running ? 'var(--run, var(--accent))' : 'var(--ok)' }}>
+          {running && <Spinner size={9} color="var(--run, var(--accent))" />}
+          {activity.status}
+        </span>
+      </div>
+      <div ref={scrollRef} style={{ maxHeight: 150, overflowY: 'auto', padding: '7px 10px', display: 'grid', gap: 3 }}>
+        {entries.length === 0 && (
+          <div style={{ fontSize: 11.5, color: 'var(--text-faint)', fontStyle: 'italic' }}>
+            {running ? 'Starting up — no output yet…' : 'No live output captured.'}
+          </div>
+        )}
+        {entries.map((entry, index) => {
+          const sty = TRANSCRIPT_KIND_STYLE[entry.kind] || TRANSCRIPT_KIND_STYLE.status;
+          return (
+            <div key={index} style={{ display: 'flex', gap: 6, alignItems: 'flex-start', fontSize: 11.5,
+              lineHeight: 1.45, color: sty.color }}>
+              <Icon name={sty.icon} size={10} style={{ marginTop: 3, flexShrink: 0, color: sty.color }} />
+              <span style={{ minWidth: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{entry.content}</span>
+            </div>
+          );
+        })}
+        {failed && activity.error && !entries.some((entry) => entry.kind === 'error') && (
+          <div style={{ fontSize: 11.5, color: 'var(--bad)' }}>{activity.error}</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // Per-stage card: as the workflow advances, each stage that starts gets its own
 // card showing who's on it, live status, and the artifacts they produced. This
 // is the "new stage → new card" timeline (not a tab/strip).
-function StageCard({ stage, stageRun, artifacts, agents }) {
+function StageCard({ stage, stageRun, artifacts, agents, liveActivity }) {
   const status = stageRun?.status || 'pending';
   const sty = STAGE_STATUS_STYLE[status] || STAGE_STATUS_STYLE.pending;
   const roles = new Set(
@@ -349,6 +412,9 @@ function StageCard({ stage, stageRun, artifacts, agents }) {
     || [...taskIds].some((taskId) => a.id.startsWith(`${taskId}_`))
     || roles.has(a.ownerAgentId),
   );
+  const stageActivities = [...taskIds]
+    .map((taskId) => ({ taskId, activity: liveActivity?.[taskId] }))
+    .filter((item) => item.activity);
   return (
     <div className="rt-rise" style={{ marginTop: 10, border: `1px solid ${alpha(sty.color, 35)}`,
       borderRadius: 'var(--r-card)', background: 'var(--surface)', boxShadow: 'var(--shadow-card)', overflow: 'hidden' }}>
@@ -387,6 +453,13 @@ function StageCard({ stage, stageRun, artifacts, agents }) {
             </div>
           );
         })}
+        {(status === 'active' || status === 'failed') && stageActivities.length > 0 && (
+          <div style={{ display: 'grid', gap: 6 }}>
+            {stageActivities.map(({ taskId, activity }) => (
+              <LiveTranscriptFeed key={taskId} activity={activity} agents={agents} />
+            ))}
+          </div>
+        )}
         {stageArtifacts.length > 0 && (
           <div style={{ display: 'grid', gap: 6, marginTop: 2 }}>
             {stageArtifacts.map((a) => (
@@ -394,7 +467,7 @@ function StageCard({ stage, stageRun, artifacts, agents }) {
             ))}
           </div>
         )}
-        {status === 'active' && stageArtifacts.length === 0 && (
+        {status === 'active' && stageArtifacts.length === 0 && stageActivities.length === 0 && (
           <div style={{ fontSize: 12, color: 'var(--text-faint)', fontStyle: 'italic' }}>Working…</div>
         )}
       </div>
@@ -501,7 +574,7 @@ function LocalInterruptedCard({ turn, agents, artifacts, onResume, onDiscard, on
 // store only holds the initial all-pending projection, so we synthesize an
 // "active" marker on the first unfinished stage to keep the run from looking
 // frozen until completion.
-function StageCards({ workflow, workflowRun, artifacts, agents, dispatchStatus }) {
+function StageCards({ workflow, workflowRun, artifacts, agents, dispatchStatus, liveActivity }) {
   if (!workflow || !workflowRun) return null;
   const stages = workflow.stages.filter(
     (s) => {
@@ -551,6 +624,7 @@ function StageCards({ workflow, workflowRun, artifacts, agents, dispatchStatus }
             stageRun={stageRun}
             artifacts={artifacts}
             agents={agents}
+            liveActivity={liveActivity}
           />
         );
       })}
@@ -558,10 +632,15 @@ function StageCards({ workflow, workflowRun, artifacts, agents, dispatchStatus }
   );
 }
 
-function AgentChainCard({ plan, records, artifacts, agents, dispatchStatus, dispatchAdapter, workspacePath }) {
+function AgentChainCard({ plan, records, artifacts, agents, dispatchStatus, dispatchAdapter, workspacePath, liveActivity }) {
   const tasks = Array.isArray(plan?.tasks) ? plan.tasks : [];
   const taskById = new Map(tasks.map((task) => [task.id, task]));
   const visibleRecords = Array.isArray(records) ? records : [];
+  // Dispatch records only land once the whole run finishes; while agents are
+  // still working the live conversation transcript is the only signal, so
+  // stream it here instead of a static "waiting" line.
+  const liveEntries = Object.entries(liveActivity || {})
+    .filter(([taskId]) => !visibleRecords.some((record) => record.taskId === taskId));
   const statusColor = dispatchStatus === 'completed'
     ? 'var(--ok)'
     : dispatchStatus === 'failed'
@@ -583,8 +662,17 @@ function AgentChainCard({ plan, records, artifacts, agents, dispatchStatus, disp
         <span>{dispatchStatus === 'completed' ? 'run complete' : dispatchStatus === 'failed' ? 'run failed' : 'running'}</span>
         {dispatchAdapter && <span className="mono" style={{ color: 'var(--text-faint)', fontWeight: 500 }}>via {dispatchAdapter}</span>}
       </div>
+      {liveEntries.length > 0 && (
+        <div style={{ display: 'grid', gap: 6 }}>
+          {liveEntries.map(([taskId, activity]) => (
+            <LiveTranscriptFeed key={taskId} activity={activity} agents={agents} />
+          ))}
+        </div>
+      )}
       {visibleRecords.length === 0 ? (
-        <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>Waiting for the first agent output.</div>
+        liveEntries.length === 0 && (
+          <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>Waiting for the first agent output.</div>
+        )
       ) : visibleRecords.map((record) => {
         const task = taskById.get(record.taskId);
         const owner = ownerFor(task, record);

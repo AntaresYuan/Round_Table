@@ -4,6 +4,7 @@ import { id, mutateData, nowIso, readData } from '../store.js';
 import type {
   Actor,
   AgentEvent,
+  AgentRuntimeConversation,
   Artifact,
   ClarifyAnswer,
   ClarifyQuestion,
@@ -14,6 +15,7 @@ import type {
   LocalTurn,
   Plan,
   PlanTask,
+  TurnLiveActivity,
   WorkflowRun,
 } from '../types.js';
 import { applyAnswers, assessClarity } from './clarify-actions.js';
@@ -313,12 +315,43 @@ export async function answerClarification(input: {
   return turnResponse(turnWithWorkflowRun);
 }
 
-export async function listTurns(chatId?: string | undefined, access?: TurnAccess | undefined): Promise<LocalTurn[]> {
+export async function listTurns(
+  chatId?: string | undefined,
+  access?: TurnAccess | undefined,
+): Promise<Array<LocalTurn & { liveActivity?: TurnLiveActivity }>> {
   const data = await readData();
   return data.turns
     .filter((turn) => !chatId || turn.localChatId === chatId)
     .filter((turn) => canAccessTurn(turn, access))
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .map((turn) => withLiveActivity(turn, data.agentRuntimeConversations));
+}
+
+// Attach each task's runtime conversation transcript to the turn (response
+// only, never persisted): dispatch records land in the store only after the
+// whole run finishes, but conversations stream per-event — this is what lets
+// the polling UI show what an agent is thinking WHILE it works.
+function withLiveActivity(
+  turn: LocalTurn,
+  conversations: AgentRuntimeConversation[],
+): LocalTurn & { liveActivity?: TurnLiveActivity } {
+  const liveActivity: TurnLiveActivity = {};
+  // Conversations are stored newest-first; keep the newest per task so a
+  // repair re-run replaces the transcript of the original failed attempt.
+  for (const conversation of conversations) {
+    if (conversation.turnId !== turn.id || !conversation.taskId) continue;
+    if (liveActivity[conversation.taskId]) continue;
+    liveActivity[conversation.taskId] = {
+      conversationId: conversation.id,
+      agentId: conversation.agentId,
+      runtime: conversation.runtime,
+      status: conversation.status,
+      error: conversation.error,
+      updatedAt: conversation.updatedAt,
+      transcript: conversation.transcript.slice(-30),
+    };
+  }
+  return Object.keys(liveActivity).length > 0 ? { ...turn, liveActivity } : turn;
 }
 
 export async function getTurn(turnId: string, access?: TurnAccess | undefined): Promise<LocalTurn | null> {
