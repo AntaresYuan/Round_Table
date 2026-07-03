@@ -37,6 +37,7 @@ const DEFAULT_STORE_KEY = 'default';
 
 let pool: PgPool | null = null;
 let postgresReady: Promise<void> | null = null;
+let normalizedPostgresReady: Promise<void> | null = null;
 
 export function nowIso(): string {
   return new Date().toISOString();
@@ -51,11 +52,16 @@ export function dataPath(): string {
 }
 
 export async function readData(): Promise<RoundtableData> {
+  if (useNormalizedPostgresStore()) return readNormalizedPostgresData();
   if (usePostgresStore()) return readPostgresData();
   return readJsonData();
 }
 
 export async function writeData(data: RoundtableData): Promise<void> {
+  if (useNormalizedPostgresStore()) {
+    await writeNormalizedPostgresData(data);
+    return;
+  }
   if (usePostgresStore()) {
     await writePostgresData(data);
     return;
@@ -64,6 +70,7 @@ export async function writeData(data: RoundtableData): Promise<void> {
 }
 
 export async function mutateData<T>(fn: (data: RoundtableData) => T | Promise<T>): Promise<T> {
+  if (useNormalizedPostgresStore()) return mutateNormalizedPostgresData(fn);
   if (usePostgresStore()) return mutatePostgresData(fn);
   const data = await readJsonData();
   const result = await fn(data);
@@ -139,6 +146,46 @@ async function mutatePostgresData<T>(fn: (data: RoundtableData) => T | Promise<T
   }
 }
 
+async function readNormalizedPostgresData(): Promise<RoundtableData> {
+  await ensureNormalizedPostgresStore();
+  return readNormalizedDataFrom(getPool());
+}
+
+async function writeNormalizedPostgresData(data: RoundtableData): Promise<void> {
+  await ensureNormalizedPostgresStore();
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    await lockNormalizedStore(client);
+    await writeNormalizedDataTo(client, data);
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function mutateNormalizedPostgresData<T>(fn: (data: RoundtableData) => T | Promise<T>): Promise<T> {
+  await ensureNormalizedPostgresStore();
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    await lockNormalizedStore(client);
+    const data = await readNormalizedDataFrom(client);
+    const output = await fn(data);
+    await writeNormalizedDataTo(client, data);
+    await client.query('COMMIT');
+    return output;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 async function ensurePostgresStore(): Promise<void> {
   postgresReady ??= (async () => {
     await getPool().query(`
@@ -161,6 +208,21 @@ async function ensurePostgresStore(): Promise<void> {
   await postgresReady;
 }
 
+async function ensureNormalizedPostgresStore(): Promise<void> {
+  normalizedPostgresReady ??= (async () => {
+    for (const statement of NORMALIZED_TABLE_STATEMENTS) {
+      await getPool().query(statement);
+    }
+    for (const statement of NORMALIZED_INDEX_STATEMENTS) {
+      await getPool().query(statement);
+    }
+  })().catch((error: unknown) => {
+    normalizedPostgresReady = null;
+    throw error;
+  });
+  await normalizedPostgresReady;
+}
+
 async function ensurePostgresRow(client: PoolClient): Promise<void> {
   await client.query(
     `INSERT INTO ${POSTGRES_TABLE} (id, data)
@@ -168,6 +230,435 @@ async function ensurePostgresRow(client: PoolClient): Promise<void> {
      ON CONFLICT (id) DO NOTHING`,
     [storeKey(), emptyData()],
   );
+}
+
+type StoreUser = RoundtableData['users'][number];
+type PgQueryable = {
+  query<T = Record<string, unknown>>(
+    statement: string,
+    values?: unknown[],
+  ): Promise<{ rows: T[] }>;
+};
+
+type NormalizedTableColumn<T> = {
+  name: string;
+  value: (row: T) => unknown;
+};
+
+type NormalizedTableSpec<T> = {
+  table: string;
+  idColumn: string;
+  rows: (data: RoundtableData) => T[];
+  assign: (data: RoundtableData, rows: T[]) => void;
+  id: (row: T) => string;
+  orderBy: string;
+  columns: Array<NormalizedTableColumn<T>>;
+};
+
+function makeTableSpec<T>(spec: NormalizedTableSpec<T>): NormalizedTableSpec<T> {
+  return spec;
+}
+
+const NORMALIZED_TABLE_STATEMENTS = [
+  `CREATE TABLE IF NOT EXISTS roundtable_users (
+    store_key text NOT NULL,
+    id text NOT NULL,
+    email text NOT NULL,
+    name text,
+    created_at timestamptz NOT NULL,
+    data jsonb NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (store_key, id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS roundtable_workbenches (
+    store_key text NOT NULL,
+    id text NOT NULL,
+    owner_id text NOT NULL,
+    name text NOT NULL,
+    workspace_path text NOT NULL,
+    created_at timestamptz NOT NULL,
+    record_updated_at timestamptz NOT NULL,
+    data jsonb NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (store_key, id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS roundtable_chats (
+    store_key text NOT NULL,
+    id text NOT NULL,
+    owner_id text NOT NULL,
+    workbench_id text NOT NULL,
+    title text NOT NULL,
+    created_at timestamptz NOT NULL,
+    record_updated_at timestamptz NOT NULL,
+    data jsonb NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (store_key, id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS roundtable_messages (
+    store_key text NOT NULL,
+    id text NOT NULL,
+    owner_id text NOT NULL,
+    chat_id text NOT NULL,
+    author_type text NOT NULL,
+    author_id text NOT NULL,
+    created_at timestamptz NOT NULL,
+    data jsonb NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (store_key, id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS roundtable_artifacts (
+    store_key text NOT NULL,
+    id text NOT NULL,
+    chat_id text NOT NULL,
+    kind text NOT NULL,
+    title text NOT NULL,
+    owner_agent_id text NOT NULL,
+    created_at timestamptz NOT NULL,
+    data jsonb NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (store_key, id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS roundtable_handoffs (
+    store_key text NOT NULL,
+    id text NOT NULL,
+    owner_id text NOT NULL,
+    chat_id text NOT NULL,
+    created_at timestamptz NOT NULL,
+    data jsonb NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (store_key, id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS roundtable_profiles (
+    store_key text NOT NULL,
+    user_id text NOT NULL,
+    record_updated_at timestamptz NOT NULL,
+    data jsonb NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (store_key, user_id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS roundtable_user_skills (
+    store_key text NOT NULL,
+    id text NOT NULL,
+    user_id text NOT NULL,
+    key text NOT NULL,
+    scope text NOT NULL,
+    target_chat_id text,
+    enabled boolean NOT NULL,
+    source text NOT NULL,
+    created_at timestamptz NOT NULL,
+    record_updated_at timestamptz NOT NULL,
+    data jsonb NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (store_key, id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS roundtable_workbench_pins (
+    store_key text NOT NULL,
+    id text NOT NULL,
+    user_id text NOT NULL,
+    workbench_id text NOT NULL,
+    created_at timestamptz NOT NULL,
+    data jsonb NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (store_key, id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS roundtable_turns (
+    store_key text NOT NULL,
+    id text NOT NULL,
+    owner_id text,
+    local_chat_id text,
+    mission_id text NOT NULL,
+    workflow_template_id text NOT NULL,
+    status text NOT NULL,
+    created_at timestamptz NOT NULL,
+    data jsonb NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (store_key, id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS roundtable_missions (
+    store_key text NOT NULL,
+    id text NOT NULL,
+    owner_id text,
+    chat_id text,
+    source_turn_id text NOT NULL,
+    status text NOT NULL,
+    workflow_template_id text NOT NULL,
+    created_at timestamptz NOT NULL,
+    record_updated_at timestamptz NOT NULL,
+    data jsonb NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (store_key, id)
+  )`,
+];
+
+const NORMALIZED_INDEX_STATEMENTS = [
+  'CREATE INDEX IF NOT EXISTS roundtable_users_email_idx ON roundtable_users (store_key, lower(email))',
+  'CREATE INDEX IF NOT EXISTS roundtable_workbenches_owner_idx ON roundtable_workbenches (store_key, owner_id)',
+  'CREATE INDEX IF NOT EXISTS roundtable_chats_owner_workbench_idx ON roundtable_chats (store_key, owner_id, workbench_id)',
+  'CREATE INDEX IF NOT EXISTS roundtable_messages_chat_created_idx ON roundtable_messages (store_key, chat_id, created_at)',
+  'CREATE INDEX IF NOT EXISTS roundtable_artifacts_chat_created_idx ON roundtable_artifacts (store_key, chat_id, created_at)',
+  'CREATE INDEX IF NOT EXISTS roundtable_handoffs_chat_created_idx ON roundtable_handoffs (store_key, chat_id, created_at)',
+  'CREATE INDEX IF NOT EXISTS roundtable_user_skills_user_idx ON roundtable_user_skills (store_key, user_id, enabled)',
+  'CREATE INDEX IF NOT EXISTS roundtable_user_skills_target_chat_idx ON roundtable_user_skills (store_key, target_chat_id)',
+  'CREATE INDEX IF NOT EXISTS roundtable_workbench_pins_user_workbench_idx ON roundtable_workbench_pins (store_key, user_id, workbench_id)',
+  'CREATE INDEX IF NOT EXISTS roundtable_turns_chat_created_idx ON roundtable_turns (store_key, local_chat_id, created_at)',
+  'CREATE INDEX IF NOT EXISTS roundtable_missions_chat_created_idx ON roundtable_missions (store_key, chat_id, created_at)',
+  'CREATE INDEX IF NOT EXISTS roundtable_missions_status_idx ON roundtable_missions (store_key, status)',
+];
+
+const NORMALIZED_TABLE_SPECS = [
+  makeTableSpec<StoreUser>({
+    table: 'roundtable_users',
+    idColumn: 'id',
+    rows: (data) => data.users,
+    assign: (data, rows) => {
+      data.users = rows;
+    },
+    id: (row) => row.id,
+    orderBy: 'created_at ASC, id ASC',
+    columns: [
+      { name: 'email', value: (row) => row.email },
+      { name: 'name', value: (row) => row.name },
+      { name: 'created_at', value: (row) => row.createdAt },
+    ],
+  }),
+  makeTableSpec<Workbench>({
+    table: 'roundtable_workbenches',
+    idColumn: 'id',
+    rows: (data) => data.workbenches,
+    assign: (data, rows) => {
+      data.workbenches = rows;
+    },
+    id: (row) => row.id,
+    orderBy: 'created_at ASC, id ASC',
+    columns: [
+      { name: 'owner_id', value: (row) => row.ownerId },
+      { name: 'name', value: (row) => row.name },
+      { name: 'workspace_path', value: (row) => row.workspacePath },
+      { name: 'created_at', value: (row) => row.createdAt },
+      { name: 'record_updated_at', value: (row) => row.updatedAt },
+    ],
+  }),
+  makeTableSpec<Chat>({
+    table: 'roundtable_chats',
+    idColumn: 'id',
+    rows: (data) => data.chats,
+    assign: (data, rows) => {
+      data.chats = rows;
+    },
+    id: (row) => row.id,
+    orderBy: 'created_at ASC, id ASC',
+    columns: [
+      { name: 'owner_id', value: (row) => row.ownerId },
+      { name: 'workbench_id', value: (row) => row.workbenchId },
+      { name: 'title', value: (row) => row.title },
+      { name: 'created_at', value: (row) => row.createdAt },
+      { name: 'record_updated_at', value: (row) => row.updatedAt },
+    ],
+  }),
+  makeTableSpec<Message>({
+    table: 'roundtable_messages',
+    idColumn: 'id',
+    rows: (data) => data.messages,
+    assign: (data, rows) => {
+      data.messages = rows;
+    },
+    id: (row) => row.id,
+    orderBy: 'created_at ASC, id ASC',
+    columns: [
+      { name: 'owner_id', value: (row) => row.ownerId },
+      { name: 'chat_id', value: (row) => row.chatId },
+      { name: 'author_type', value: (row) => row.authorType },
+      { name: 'author_id', value: (row) => row.authorId },
+      { name: 'created_at', value: (row) => row.createdAt },
+    ],
+  }),
+  makeTableSpec<Artifact>({
+    table: 'roundtable_artifacts',
+    idColumn: 'id',
+    rows: (data) => data.artifacts,
+    assign: (data, rows) => {
+      data.artifacts = rows;
+    },
+    id: (row) => row.id,
+    orderBy: 'created_at ASC, id ASC',
+    columns: [
+      { name: 'chat_id', value: (row) => row.chatId },
+      { name: 'kind', value: (row) => row.kind },
+      { name: 'title', value: (row) => row.title },
+      { name: 'owner_agent_id', value: (row) => row.ownerAgentId },
+      { name: 'created_at', value: (row) => row.createdAt },
+    ],
+  }),
+  makeTableSpec<Handoff>({
+    table: 'roundtable_handoffs',
+    idColumn: 'id',
+    rows: (data) => data.handoffs,
+    assign: (data, rows) => {
+      data.handoffs = rows;
+    },
+    id: (row) => row.id,
+    orderBy: 'created_at ASC, id ASC',
+    columns: [
+      { name: 'owner_id', value: (row) => row.ownerId },
+      { name: 'chat_id', value: (row) => row.chatId },
+      { name: 'created_at', value: (row) => row.createdAt },
+    ],
+  }),
+  makeTableSpec<UserProfile>({
+    table: 'roundtable_profiles',
+    idColumn: 'user_id',
+    rows: (data) => data.profiles,
+    assign: (data, rows) => {
+      data.profiles = rows;
+    },
+    id: (row) => row.userId,
+    orderBy: 'user_id ASC',
+    columns: [{ name: 'record_updated_at', value: (row) => row.updatedAt }],
+  }),
+  makeTableSpec<UserSkill>({
+    table: 'roundtable_user_skills',
+    idColumn: 'id',
+    rows: (data) => data.userSkills,
+    assign: (data, rows) => {
+      data.userSkills = rows;
+    },
+    id: (row) => row.id,
+    orderBy: 'created_at ASC, id ASC',
+    columns: [
+      { name: 'user_id', value: (row) => row.userId },
+      { name: 'key', value: (row) => row.key },
+      { name: 'scope', value: (row) => row.scope },
+      { name: 'target_chat_id', value: (row) => row.targetChatId },
+      { name: 'enabled', value: (row) => row.enabled },
+      { name: 'source', value: (row) => row.source },
+      { name: 'created_at', value: (row) => row.createdAt },
+      { name: 'record_updated_at', value: (row) => row.updatedAt },
+    ],
+  }),
+  makeTableSpec<WorkbenchPin>({
+    table: 'roundtable_workbench_pins',
+    idColumn: 'id',
+    rows: (data) => data.workbenchPins,
+    assign: (data, rows) => {
+      data.workbenchPins = rows;
+    },
+    id: (row) => row.id,
+    orderBy: 'created_at ASC, id ASC',
+    columns: [
+      { name: 'user_id', value: (row) => row.userId },
+      { name: 'workbench_id', value: (row) => row.workbenchId },
+      { name: 'created_at', value: (row) => row.createdAt },
+    ],
+  }),
+  makeTableSpec<LocalTurn>({
+    table: 'roundtable_turns',
+    idColumn: 'id',
+    rows: (data) => data.turns,
+    assign: (data, rows) => {
+      data.turns = rows;
+    },
+    id: (row) => row.id,
+    orderBy: 'created_at ASC, id ASC',
+    columns: [
+      { name: 'owner_id', value: (row) => row.ownerId },
+      { name: 'local_chat_id', value: (row) => row.localChatId },
+      { name: 'mission_id', value: (row) => row.missionId },
+      { name: 'workflow_template_id', value: (row) => row.workflowTemplateId },
+      { name: 'status', value: (row) => row.status },
+      { name: 'created_at', value: (row) => row.createdAt },
+    ],
+  }),
+  makeTableSpec<Mission>({
+    table: 'roundtable_missions',
+    idColumn: 'id',
+    rows: (data) => data.missions,
+    assign: (data, rows) => {
+      data.missions = rows;
+    },
+    id: (row) => row.id,
+    orderBy: 'created_at ASC, id ASC',
+    columns: [
+      { name: 'owner_id', value: (row) => row.ownerId },
+      { name: 'chat_id', value: (row) => row.chatId },
+      { name: 'source_turn_id', value: (row) => row.sourceTurnId },
+      { name: 'status', value: (row) => row.status },
+      { name: 'workflow_template_id', value: (row) => row.workflowTemplateId },
+      { name: 'created_at', value: (row) => row.createdAt },
+      { name: 'record_updated_at', value: (row) => row.updatedAt },
+    ],
+  }),
+];
+
+async function readNormalizedDataFrom(queryable: PgQueryable): Promise<RoundtableData> {
+  const data = emptyData();
+  for (const tableSpec of NORMALIZED_TABLE_SPECS) {
+    const spec = tableSpec as NormalizedTableSpec<unknown>;
+    const rows = await readNormalizedRows(queryable, spec);
+    spec.assign(data, rows);
+  }
+  return normalizeData(data);
+}
+
+async function writeNormalizedDataTo(queryable: PgQueryable, data: RoundtableData): Promise<void> {
+  const normalized = normalizeData(data);
+  for (const tableSpec of NORMALIZED_TABLE_SPECS) {
+    const spec = tableSpec as NormalizedTableSpec<unknown>;
+    await syncNormalizedRows(queryable, spec, spec.rows(normalized));
+  }
+}
+
+async function readNormalizedRows<T>(queryable: PgQueryable, spec: NormalizedTableSpec<T>): Promise<T[]> {
+  const result = await queryable.query<{ data: T }>(
+    `SELECT data FROM ${identifier(spec.table)} WHERE store_key = $1 ORDER BY ${spec.orderBy}`,
+    [storeKey()],
+  );
+  return result.rows.map((row) => row.data);
+}
+
+async function syncNormalizedRows<T>(
+  queryable: PgQueryable,
+  spec: NormalizedTableSpec<T>,
+  rows: T[],
+): Promise<void> {
+  const rowIds = rows.map((row) => spec.id(row));
+  const table = identifier(spec.table);
+  const idColumn = identifier(spec.idColumn);
+  const columnNames = spec.columns.map((column) => identifier(column.name));
+  const insertColumns = ['store_key', spec.idColumn, ...spec.columns.map((column) => column.name), 'data', 'updated_at']
+    .map(identifier)
+    .join(', ');
+  const assignments = [...columnNames.map((name) => `${name} = EXCLUDED.${name}`), 'data = EXCLUDED.data', 'updated_at = now()']
+    .join(', ');
+
+  for (const row of rows) {
+    const values = [storeKey(), spec.id(row), ...spec.columns.map((column) => column.value(row)), row];
+    const placeholders = values.map((_, index) => (index === values.length - 1 ? `$${index + 1}::jsonb` : `$${index + 1}`));
+    await queryable.query(
+      `INSERT INTO ${table} (${insertColumns})
+       VALUES (${[...placeholders, 'now()'].join(', ')})
+       ON CONFLICT (store_key, ${idColumn})
+       DO UPDATE SET ${assignments}`,
+      values,
+    );
+  }
+
+  if (rowIds.length === 0) {
+    await queryable.query(`DELETE FROM ${table} WHERE store_key = $1`, [storeKey()]);
+    return;
+  }
+
+  await queryable.query(`DELETE FROM ${table} WHERE store_key = $1 AND NOT (${idColumn} = ANY($2::text[]))`, [
+    storeKey(),
+    rowIds,
+  ]);
+}
+
+async function lockNormalizedStore(client: PoolClient): Promise<void> {
+  await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`roundtable:${storeKey()}`]);
+}
+
+function identifier(name: string): string {
+  return `"${name.replaceAll('"', '""')}"`;
 }
 
 function getPool(): PgPool {
@@ -180,11 +671,22 @@ function getPool(): PgPool {
   return pool;
 }
 
-function usePostgresStore(): boolean {
+type StoreDriver = 'json' | 'postgres' | 'postgres_normalized';
+
+function storeDriver(): StoreDriver {
   const driver = process.env.ROUNDTABLE_STORE_DRIVER?.trim().toLowerCase();
-  if (driver === 'postgres') return true;
-  if (driver === 'json') return false;
-  return process.env.NODE_ENV !== 'test' && Boolean(process.env.DATABASE_URL);
+  if (driver === 'postgres_normalized' || driver === 'normalized') return 'postgres_normalized';
+  if (driver === 'postgres') return 'postgres';
+  if (driver === 'json') return 'json';
+  return process.env.NODE_ENV !== 'test' && Boolean(process.env.DATABASE_URL) ? 'postgres' : 'json';
+}
+
+function useNormalizedPostgresStore(): boolean {
+  return storeDriver() === 'postgres_normalized';
+}
+
+function usePostgresStore(): boolean {
+  return storeDriver() === 'postgres';
 }
 
 function storeKey(): string {

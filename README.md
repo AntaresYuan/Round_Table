@@ -22,12 +22,15 @@ corepack pnpm cli workflow smoke --message "Build a waitlist page"
 
 ## Persistence
 
-The store keeps the existing `RoundtableData` document shape. For local
+The action layer still works with the existing `RoundtableData` shape, but the
+production Postgres path now persists each entity into its own table. For local
 prototype work it writes JSON to `.roundtable/data.json`; for shared or larger
-runs, set `DATABASE_URL` and the app will create/use a Postgres table:
+runs, set `DATABASE_URL` and `ROUNDTABLE_STORE_DRIVER=postgres_normalized`:
 
 ```bash
-DATABASE_URL=postgres://roundtable:roundtable@localhost:5432/roundtable pnpm dev
+DATABASE_URL=postgres://roundtable:roundtable@localhost:5432/roundtable \
+ROUNDTABLE_STORE_DRIVER=postgres_normalized \
+pnpm dev
 ```
 
 To migrate existing local data into Postgres:
@@ -35,6 +38,20 @@ To migrate existing local data into Postgres:
 ```bash
 DATABASE_URL=postgres://roundtable:roundtable@localhost:5432/roundtable pnpm migrate:postgres
 ```
+
+The normalized driver creates these tables on boot:
+
+- `roundtable_users`
+- `roundtable_workbenches`
+- `roundtable_chats`
+- `roundtable_messages`
+- `roundtable_artifacts`
+- `roundtable_handoffs`
+- `roundtable_profiles`
+- `roundtable_user_skills`
+- `roundtable_workbench_pins`
+- `roundtable_turns`
+- `roundtable_missions`
 
 For a local Docker-backed database, use the bundled compose service:
 
@@ -45,9 +62,9 @@ pnpm db:smoke:local
 pnpm dev:postgres
 ```
 
-The initial Postgres backend stores one `jsonb` document in `roundtable_store`.
-That keeps the current action layer stable; split into relational tables later
-when search, analytics, or high-concurrency collaboration need it.
+The legacy `postgres` driver is still available and writes one `jsonb` document
+to `roundtable_store`. Keep it only for compatibility or rollback. New
+production environments should use `postgres_normalized`.
 
 ## Auth
 
