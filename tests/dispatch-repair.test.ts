@@ -66,6 +66,52 @@ describe('makeFixerTask — repair context deps', () => {
     // ordinary dep would mark the round-2 fixer blocked forever.
     expect(fixer.deps).not.toContain('task_review');
   });
+
+  it('constrains a planning-failure fixer to re-planning only', () => {
+    const failed = scheduled({
+      id: 'task_planning',
+      role: 'planner',
+      assignee: '@planning',
+      owner: 'orchestrator',
+      title: 'Plan the lens review site',
+    });
+    const fixer = makeFixerTask(failed, { message: 'runtime_exit_1' });
+    expect(fixer.replanOnly).toBe(true);
+    expect(fixer.title).toContain('Re-plan');
+    expect(fixer.brief).toContain('RE-PLANNING ONLY');
+    expect(fixer.brief).toMatch(/Do NOT create, modify, or delete/);
+  });
+
+  it('keeps the re-planning constraint on chained fix rounds', () => {
+    const failed = scheduled({
+      id: 'task_planning',
+      role: 'planner',
+      assignee: '@planning',
+      owner: 'orchestrator',
+    });
+    const round1 = makeFixerTask(failed, { message: 'runtime_exit_1' });
+    const failedRound1 = scheduled({
+      ...round1,
+      id: round1.id,
+      producedFor: 'task_planning',
+      fixRound: 1,
+    });
+    const round2 = makeFixerTask(failedRound1, { message: 'runtime_exit_1' });
+    expect(round2.replanOnly).toBe(true);
+    expect(round2.brief).toContain('RE-PLANNING ONLY');
+  });
+
+  it('does not constrain fixers for build failures', () => {
+    const failed = scheduled({
+      id: 'task_atlas',
+      role: 'implementer',
+      assignee: '@atlas',
+      owner: 'atlas',
+    });
+    const fixer = makeFixerTask(failed, { message: 'agent_task_failed' });
+    expect(fixer.replanOnly).toBeUndefined();
+    expect(fixer.brief).not.toContain('RE-PLANNING ONLY');
+  });
 });
 
 describe('plannedTaskPatches — concrete titles once the plan exists', () => {

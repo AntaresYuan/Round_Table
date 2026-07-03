@@ -1535,6 +1535,11 @@ export function makeFixerTask(
   const fixer = AGENT_ROSTER.find((agent) => agent.role === 'fixer') ?? AGENT_ROSTER[0]!;
   const round = (failed.fixRound ?? 0) + 1;
   const fromReview = failed.role === 'reviewer';
+  // A failed planning task must be repaired by RE-PLANNING, not by implementing:
+  // a fixer with full tool access would otherwise "repair the plan" by building
+  // the product in the shared workspace before the plan stage even completes.
+  // The flag rides on the derived task so chained fix rounds stay constrained.
+  const fromPlanning = failed.role === 'planner' || failed.replanOnly === true;
   const findingsText = error.scan && error.scan.length > 0
     ? `\n\nSafety findings:\n${describeFindings(error.scan)}`
     : '';
@@ -1549,7 +1554,11 @@ export function makeFixerTask(
   return {
     id: `fix_${failed.id}_r${round}`,
     // A review-driven fix reads better as "Apply review fixes" than "Fix Review …".
-    title: fromReview ? `Apply review fixes (round ${round})` : `Fix ${failed.title}`,
+    title: fromReview
+      ? `Apply review fixes (round ${round})`
+      : fromPlanning
+        ? `Re-plan: ${failed.title} (round ${round})`
+        : `Fix ${failed.title}`,
     assignee: fixer.assignee,
     owner: fixer.id,
     role: fixer.role,
@@ -1559,11 +1568,19 @@ export function makeFixerTask(
       ? `The reviewer found blocking issues (${error.message}). Apply focused fixes to the `
         + `implementer's deliverable so each Critical/High issue is resolved, and output the `
         + `corrected deliverable plus a short summary of what changed.${reviewText}`
-      : `Repair the failure from "${failed.title}" (${failed.id}). `
-        + `Error: ${error.message}.${findingsText}${reviewText}\n\n`
-        + `Apply a focused fix and summarize the changed files.`,
+      : fromPlanning
+        ? `The planning task "${failed.title}" (${failed.id}) failed. `
+          + `Error: ${error.message}.${findingsText}${reviewText}\n\n`
+          + `Recover by RE-PLANNING ONLY: produce the corrected technical plan — goal, task `
+          + `breakdown with owners and dependencies, and risks. Do NOT create, modify, or `
+          + `delete any source or product files; do not run build or scaffolding commands. `
+          + `Implementation belongs to the build stage, which runs after this plan is in place.`
+        : `Repair the failure from "${failed.title}" (${failed.id}). `
+          + `Error: ${error.message}.${findingsText}${reviewText}\n\n`
+          + `Apply a focused fix and summarize the changed files.`,
     deps: [failed.id, ...inheritedDeps],
     parallel: false,
+    ...(fromPlanning ? { replanOnly: true } : {}),
   };
 }
 

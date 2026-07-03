@@ -346,6 +346,11 @@ export type PlanTask = {
   // whose artifact gets updated in place so the preview shows the fixed version.
   repairTargetPath?: string | undefined;
   repairTargetTaskId?: string | undefined;
+  // Set on fixer tasks derived from a failed PLANNING task (and inherited by
+  // chained fix rounds): the fixer must only re-produce the plan — it is not
+  // allowed to touch source/product files. Implementation stays with the
+  // build stage that runs once the repaired plan is in place.
+  replanOnly?: boolean | undefined;
 };
 
 export type Plan = {
