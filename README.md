@@ -3,7 +3,7 @@
 Roundtable is a visual multi-agent workbench for planning, running, reviewing,
 and shipping software tasks with a persistent AI squad.
 
-![Roundtable workbench](docs/assets/readme/roundtable-workbench.png)
+![Roundtable workbench](https://cdn.jsdelivr.net/gh/EdwinjJ1/roundtable@main/docs/assets/readme/roundtable-workbench.png)
 
 ## What Is Roundtable?
 
@@ -24,9 +24,9 @@ conversation.
 
 ## Screenshots
 
-![Live roundtable](docs/assets/readme/live-roundtable.png)
+![Live roundtable](https://cdn.jsdelivr.net/gh/EdwinjJ1/roundtable@main/docs/assets/readme/live-roundtable.png)
 
-![Parallel plan and artifacts](docs/assets/readme/parallel-plan-artifacts.png)
+![Parallel plan and artifacts](https://cdn.jsdelivr.net/gh/EdwinjJ1/roundtable@main/docs/assets/readme/parallel-plan-artifacts.png)
 
 ## Quick Start
 
