@@ -210,6 +210,10 @@ export async function isModelProviderConfigured(provider: ModelProviderKind): Pr
   return (await resolveModelProvider(provider)).configured;
 }
 
+export async function defaultConfiguredModelProvider(): Promise<ModelProviderKind | null> {
+  return firstConfiguredModelProvider(await readData());
+}
+
 export async function resolveModelProvider(provider: ModelProviderKind): Promise<ResolvedModelProvider> {
   return resolveModelProviderFromData(provider, await readData());
 }

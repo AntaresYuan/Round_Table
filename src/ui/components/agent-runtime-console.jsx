@@ -25,25 +25,41 @@ const btn = {
   alignItems: 'center',
   gap: 6,
   border: '1px solid var(--border)',
-  borderRadius: 7,
+  borderRadius: 6,
   background: 'var(--surface)',
   color: 'var(--text)',
   font: 'inherit',
-  fontSize: 12.5,
-  padding: '7px 10px',
+  fontSize: 12,
+  padding: '6px 9px',
   cursor: 'pointer',
 };
 
 const field = {
-  height: 34,
+  height: 31,
+  minWidth: 0,
+  width: '100%',
+  boxSizing: 'border-box',
   border: '1px solid var(--border)',
-  borderRadius: 7,
+  borderRadius: 6,
   background: 'var(--surface-2)',
   color: 'var(--text)',
   font: 'inherit',
-  fontSize: 12.5,
-  padding: '0 9px',
+  fontSize: 12,
+  padding: '0 8px',
   outline: 'none',
+};
+
+const badge = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  minHeight: 20,
+  border: '1px solid var(--border)',
+  borderRadius: 999,
+  padding: '0 7px',
+  fontSize: 10.5,
+  color: 'var(--text-faint)',
+  background: 'var(--surface)',
+  whiteSpace: 'nowrap',
 };
 
 const interactionOptions = [
@@ -71,6 +87,7 @@ function AgentRuntimeConsole() {
   const [state, setState] = useState(null);
   const [drafts, setDrafts] = useState({});
   const [runtimeDrafts, setRuntimeDrafts] = useState({});
+  const [expandedRuntimes, setExpandedRuntimes] = useState({});
   const [message, setMessage] = useState({});
   const [saving, setSaving] = useState(null);
   const [savingRuntime, setSavingRuntime] = useState(null);
@@ -141,6 +158,10 @@ function AgentRuntimeConsole() {
   const runtimeOptions = state?.supported || [];
   const modelProviderOptions = state?.modelProviders || [];
   const agents = state?.agents || [];
+  const agentLookup = useMemo(
+    () => Object.fromEntries(agents.map((agent) => [agent.id, agent])),
+    [agents],
+  );
   const conversations = state?.conversations || [];
   const executionAdapter = state?.executionAdapter || 'local-dispatch';
   const executionSource = state?.executionAdapterSource || 'built-in';
@@ -154,6 +175,10 @@ function AgentRuntimeConsole() {
 
   const updateRuntimeDraft = (runtimeKind, patch) => {
     setRuntimeDrafts((prev) => ({ ...prev, [runtimeKind]: { ...(prev[runtimeKind] || {}), ...patch } }));
+  };
+
+  const toggleRuntime = (runtimeKind) => {
+    setExpandedRuntimes((prev) => ({ ...prev, [runtimeKind]: !prev[runtimeKind] }));
   };
 
   const save = async (agentId) => {
@@ -316,23 +341,27 @@ function AgentRuntimeConsole() {
         <button onClick={load} style={btn}><Icon name="search" size={14} /> Refresh</button>
       </header>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(360px, 520px) minmax(0, 1fr)', gap: 16,
-        padding: 16, flex: 1, minHeight: 0 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(320px, 460px) minmax(0, 1fr)', gap: 12,
+        padding: 12, flex: 1, minHeight: 0 }}>
         <section style={{ ...card, overflow: 'hidden', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
           <div style={sectionHead}>Agent CLI Overrides</div>
-          <div style={{ overflowY: 'auto', padding: 10, display: 'grid', gap: 8 }}>
+          <div style={{ overflowY: 'auto', padding: 8, display: 'grid', gap: 7 }}>
             {agents.map((agent) => {
               const draft = drafts[agent.id] || {};
               return (
-                <div key={agent.id} style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 10,
-                  background: 'var(--surface-2)', display: 'grid', gap: 9 }}>
+                <div key={agent.id} style={{ border: '1px solid var(--border)', borderRadius: 7, padding: 8,
+                  background: 'var(--surface-2)', display: 'grid', gap: 8 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
-                    <Avatar agent={{ id: agent.id, displayName: agent.name, role: agent.role, color: roleColor(agent.role) }} size={28} />
+                    <span style={{ width: 7, height: 7, borderRadius: '50%', background: agent.ready ? 'var(--ok)' : 'var(--bad)', flexShrink: 0 }} />
+                    <Avatar agent={{ id: agent.id, displayName: agent.name, role: agent.role, color: roleColor(agent.role) }} size={24} />
                     <div style={{ minWidth: 0, flex: 1 }}>
-                      <div style={{ fontSize: 13.5, fontWeight: 700 }}>{agent.name}</div>
+                      <div style={{ fontSize: 13, fontWeight: 700 }}>{agent.name}</div>
                       <div className="mono" style={{ fontSize: 10.5, color: 'var(--text-faint)' }}>{agent.id} · {agent.role}</div>
+                      <div className="mono" style={{ marginTop: 2, fontSize: 10.5, color: agent.ready ? 'var(--text-faint)' : 'var(--bad)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {agent.ready ? agentRuntimeStatus(agent) : agent.readyReason}
+                      </div>
                     </div>
-                    <span style={{ fontSize: 10.5, color: agent.configured ? 'var(--accent)' : 'var(--text-faint)' }}>
+                    <span style={{ ...badge, color: agent.configured ? 'var(--accent)' : 'var(--text-faint)' }}>
                       {agent.configured ? 'configured' : 'default'}
                     </span>
                   </div>
@@ -375,7 +404,10 @@ function AgentRuntimeConsole() {
                   <div style={{ display: 'flex', gap: 7 }}>
                     <input value={message[agent.id] || ''} onChange={(e) => setMessage((prev) => ({ ...prev, [agent.id]: e.target.value }))}
                       placeholder={`Message ${agent.name}`} style={{ ...field, flex: 1 }} />
-                    <button onClick={() => sendDirect(agent.id)} style={btn}><Icon name="send" size={13} /></button>
+                    <button disabled={!agent.ready} onClick={() => sendDirect(agent.id)}
+                      style={{ ...btn, opacity: agent.ready ? 1 : 0.45, cursor: agent.ready ? 'pointer' : 'not-allowed' }}>
+                      <Icon name="send" size={13} />
+                    </button>
                   </div>
                 </div>
               );
@@ -386,32 +418,57 @@ function AgentRuntimeConsole() {
         <section style={{ display: 'grid', gridTemplateRows: 'auto minmax(0, 1fr)', gap: 16, minHeight: 0 }}>
           <div style={{ ...card, overflow: 'hidden' }}>
             <div style={sectionHead}>CLI Runtime Overrides</div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 8, padding: 10 }}>
+            <div style={{ display: 'grid', gap: 8, padding: 8 }}>
               {runtimeOptions.map((runtime) => {
                 const draft = runtimeDrafts[runtime.kind] || {};
                 const isLocal = runtime.kind === 'local-dispatch';
+                const expanded = Boolean(expandedRuntimes[runtime.kind]);
                 return (
-                  <div key={runtime.kind} style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 10,
-                    background: runtime.ready ? 'var(--surface-2)' : 'color-mix(in oklab, var(--bad) 8%, var(--surface))',
-                    display: 'grid', gap: 9 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 7, minWidth: 0 }}>
-                      <span style={{ width: 7, height: 7, borderRadius: '50%', background: runtime.ready ? 'var(--ok)' : 'var(--bad)', flexShrink: 0 }} />
+                  <div key={runtime.kind} style={{ border: '1px solid var(--border)', borderRadius: 7,
+                    background: runtime.ready ? 'var(--surface-2)' : 'color-mix(in oklab, var(--bad) 7%, var(--surface))',
+                    overflow: 'hidden' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 10px',
+                      borderBottom: expanded && !isLocal ? '1px solid var(--border)' : 'none', minWidth: 0 }}>
+                      <span style={{ width: 8, height: 8, borderRadius: '50%', background: runtime.ready ? 'var(--ok)' : 'var(--bad)', flexShrink: 0 }} />
                       <div style={{ minWidth: 0, flex: 1 }}>
-                        <div style={{ fontSize: 12.5, fontWeight: 700 }}>{runtime.label}</div>
-                        <div className="mono" style={{ marginTop: 2, fontSize: 10.5, color: 'var(--text-faint)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {runtime.ready ? runtimeCommandLabel(runtime) : runtime.readyReason}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                          <div style={{ fontSize: 13, fontWeight: 760, whiteSpace: 'nowrap' }}>{runtime.label}</div>
+                          <span className="mono" style={{ fontSize: 10.5, color: 'var(--text-faint)' }}>{runtime.binary || runtime.kind}</span>
+                          <span style={{ ...badge, color: runtime.ready ? 'var(--ok)' : 'var(--bad)' }}>
+                            {runtime.ready ? 'ready' : 'missing'}
+                          </span>
+                          <span style={{ ...badge, color: runtime.configured ? 'var(--accent)' : 'var(--text-faint)' }}>
+                            {runtime.configured ? 'configured' : 'default'}
+                          </span>
+                        </div>
+                        <div style={{ marginTop: 6, display: 'grid', gridTemplateColumns: 'minmax(0, 1.25fr) minmax(0, 1fr) minmax(100px, .55fr)', gap: 8 }}>
+                          <RuntimeStatusCell
+                            label="install"
+                            ok={runtime.ready || Boolean(runtime.commandPath)}
+                            value={runtimeInstallValue(runtime)}
+                          />
+                          <RuntimeStatusCell
+                            label="login"
+                            ok={runtime.authConfigured}
+                            value={runtimeAuthValue(runtime)}
+                          />
+                          <RuntimeStatusCell
+                            label="mode"
+                            ok
+                            value={runtimeModeValue(runtime)}
+                          />
                         </div>
                       </div>
-                      <span style={{ fontSize: 10.5, color: runtime.configured ? 'var(--accent)' : 'var(--text-faint)' }}>
-                        {runtime.configured ? 'configured' : 'default'}
-                      </span>
+                      {!isLocal && (
+                        <button onClick={() => toggleRuntime(runtime.kind)} style={{ ...btn, flexShrink: 0 }}>
+                          <Icon name="wrench" size={13} /> {expanded ? 'Close' : 'Configure'}
+                        </button>
+                      )}
                     </div>
 
-                    {isLocal ? (
-                      <div style={{ fontSize: 11.5, color: 'var(--text-faint)' }}>built in</div>
-                    ) : (
-                      <>
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 7 }}>
+                    {!isLocal && expanded && (
+                      <div style={{ padding: 10, display: 'grid', gap: 8 }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 7 }}>
                           <input value={draft.command || ''} onChange={(e) => updateRuntimeDraft(runtime.kind, { command: e.target.value })}
                             placeholder={runtime.binary ? `command (${runtime.binary})` : 'command'} style={field} />
                           <input value={draft.model || ''} onChange={(e) => updateRuntimeDraft(runtime.kind, { model: e.target.value })}
@@ -437,16 +494,8 @@ function AgentRuntimeConsole() {
                           <input value={draft.argsText || ''} onChange={(e) => updateRuntimeDraft(runtime.kind, { argsText: e.target.value })}
                             placeholder="args, use {prompt}" style={{ ...field, gridColumn: '1 / -1' }} />
                           <textarea value={draft.envText || ''} onChange={(e) => updateRuntimeDraft(runtime.kind, { envText: e.target.value })}
-                            placeholder="ENV_KEY=value" rows={3} style={{ ...field, height: 64, resize: 'vertical', paddingTop: 8, gridColumn: '1 / -1' }} />
+                            placeholder="ENV_KEY=value" rows={3} style={{ ...field, height: 58, resize: 'vertical', paddingTop: 7, gridColumn: '1 / -1' }} />
                         </div>
-                        {runtime.configuredEnvKeys?.length > 0 && (
-                          <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
-                            {runtime.configuredEnvKeys.map((key) => (
-                              <span key={key} className="mono" style={{ fontSize: 10.5, padding: '2px 6px',
-                                borderRadius: 5, border: '1px solid var(--border)', color: 'var(--text-faint)' }}>{key}</span>
-                            ))}
-                          </div>
-                        )}
                         <div style={{ display: 'flex', gap: 7, alignItems: 'center', flexWrap: 'wrap' }}>
                           <button onClick={() => saveRuntimeDefault(runtime.kind)}
                             style={{ ...btn, background: 'var(--accent)', color: '#fff', border: 'none' }}>
@@ -458,7 +507,7 @@ function AgentRuntimeConsole() {
                             Clear env
                           </label>
                         </div>
-                      </>
+                      </div>
                     )}
                   </div>
                 );
@@ -468,12 +517,12 @@ function AgentRuntimeConsole() {
 
           <div style={{ ...card, overflow: 'hidden', minHeight: 0, display: 'flex', flexDirection: 'column' }}>
             <div style={sectionHead}>CLI Conversations</div>
-            <div style={{ overflowY: 'auto', padding: 10, display: 'grid', gap: 9 }}>
+            <div style={{ overflowY: 'auto', padding: 8, display: 'grid', gap: 7 }}>
               {conversations.length === 0 && (
                 <div style={{ padding: 18, color: 'var(--text-faint)', fontSize: 13 }}>No runtime conversations yet.</div>
               )}
               {conversations.map((conversation) => (
-                <ConversationCard key={conversation.id} conversation={conversation} onStop={stop} />
+                <ConversationCard key={conversation.id} conversation={conversation} agent={agentLookup[conversation.agentId]} onStop={stop} />
               ))}
             </div>
           </div>
@@ -485,19 +534,26 @@ function AgentRuntimeConsole() {
   );
 }
 
-function ConversationCard({ conversation, onStop }) {
-  const latest = conversation.transcript.slice(-8);
+function ConversationCard({ conversation, agent, onStop }) {
+  const latest = conversation.transcript.slice(-5);
+  const agentName = agent?.name || conversation.agentId;
+  const subtitle = [
+    agentName,
+    conversation.pid ? `pid ${conversation.pid}` : '',
+    shortTime(conversation.startedAt),
+  ].filter(Boolean).join(' · ');
   return (
-    <article style={{ border: '1px solid var(--border)', borderRadius: 8, background: 'var(--surface-2)', overflow: 'hidden' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '9px 10px', borderBottom: '1px solid var(--border)' }}>
+    <article style={{ border: '1px solid var(--border)', borderRadius: 7, background: 'var(--surface-2)', overflow: 'hidden' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 9px', borderBottom: '1px solid var(--border)' }}>
         <span style={{ width: 8, height: 8, borderRadius: '50%', background: statusColor(conversation.status) }} />
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-            <strong style={{ fontSize: 13 }}>{conversation.title}</strong>
-            <span className="mono" style={{ fontSize: 10.5, color: 'var(--text-faint)' }}>{conversation.runtime}</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+            <strong style={{ fontSize: 12.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{conversation.title}</strong>
+            <span className="mono" style={{ ...badge, flexShrink: 0 }}>{compactRuntimeLabel(conversation.runtime)}</span>
+            <span style={{ ...badge, color: statusColor(conversation.status), flexShrink: 0 }}>{conversation.status}</span>
           </div>
-          <div className="mono" style={{ marginTop: 2, fontSize: 10.5, color: 'var(--text-faint)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {conversation.agentId} · {conversation.command}
+          <div className="mono" style={{ marginTop: 3, fontSize: 10.5, color: 'var(--text-faint)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {subtitle}
           </div>
         </div>
         {conversation.status === 'running' && (
@@ -506,18 +562,32 @@ function ConversationCard({ conversation, onStop }) {
           </button>
         )}
       </div>
-      <div style={{ display: 'grid', gap: 6, padding: 10 }}>
+      <div style={{ display: 'grid', gap: 5, padding: 8 }}>
         {latest.length === 0 ? (
           <div style={{ fontSize: 12, color: 'var(--text-faint)' }}>Waiting for output.</div>
         ) : latest.map((line) => (
-          <div key={`${line.at}-${line.content.slice(0, 12)}`} style={{ borderLeft: `2px solid ${kindColor(line.kind)}`,
-            padding: '4px 8px', background: 'var(--surface)', borderRadius: 5 }}>
-            <div className="mono" style={{ fontSize: 10, color: 'var(--text-faint)', marginBottom: 2 }}>{line.kind}</div>
-            <div style={{ fontSize: 12.5, lineHeight: 1.45, whiteSpace: 'pre-wrap' }}>{line.content}</div>
+          <div key={`${line.at}-${line.content.slice(0, 12)}`} style={{ display: 'grid', gridTemplateColumns: '68px minmax(0, 1fr)', gap: 8,
+            padding: '5px 7px', background: 'var(--surface)', borderRadius: 5, borderLeft: `2px solid ${kindColor(line.kind)}` }}>
+            <div className="mono" style={{ fontSize: 10, color: 'var(--text-faint)' }}>{line.kind}</div>
+            <div style={{ fontSize: 12, lineHeight: 1.4, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{line.content}</div>
           </div>
         ))}
       </div>
     </article>
+  );
+}
+
+function RuntimeStatusCell({ label, ok = false, value }) {
+  return (
+    <div style={{ minWidth: 0, display: 'flex', alignItems: 'center', gap: 6 }}>
+      <span style={{ width: 6, height: 6, borderRadius: '50%', background: ok ? 'var(--ok)' : 'var(--text-faint)', flexShrink: 0 }} />
+      <span className="mono" style={{ fontSize: 10, color: 'var(--text-faint)', textTransform: 'uppercase', letterSpacing: '.04em', flexShrink: 0 }}>
+        {label}
+      </span>
+      <span className="mono" style={{ minWidth: 0, fontSize: 11, color: ok ? 'var(--text)' : 'var(--text-faint)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        {value}
+      </span>
+    </div>
   );
 }
 
@@ -539,11 +609,67 @@ function parseEnvText(raw) {
   return env;
 }
 
-function runtimeCommandLabel(runtime) {
-  if (runtime.command) return runtime.command;
-  if (runtime.binary) return runtime.binary;
-  if (runtime.kind === 'custom-cli') return 'ROUNDTABLE_AGENT_COMMAND';
-  return 'built in';
+function runtimeInstallValue(runtime) {
+  if (runtime.kind === 'local-dispatch') return 'built in';
+  const command = runtime.command || runtime.binary || runtime.kind;
+  const version = compactVersion(runtime.detectedVersion);
+  if (runtime.commandPath) return [command, version].filter(Boolean).join(' · ');
+  return runtime.readyReason || `missing ${command}`;
+}
+
+function runtimeAuthValue(runtime) {
+  if (runtime.kind === 'local-dispatch') return 'built in';
+  if (!runtime.authConfigured) return 'not detected';
+  const sources = (runtime.authSources || []).filter((source) => source !== 'not-required');
+  if (sources.length === 0) return 'not required';
+  return sources.map(compactAuthSource).join(' · ');
+}
+
+function runtimeModeValue(runtime) {
+  const confirm = runtime.interactionMode || 'auto';
+  const effort = runtime.effort || 'default';
+  return `${confirm} · ${effort}`;
+}
+
+function compactVersion(value) {
+  if (!value) return '';
+  const match = value.match(/\d+(?:\.\d+){1,3}/);
+  return match ? match[0] : value.replace(/^v\s*/i, '').slice(0, 28);
+}
+
+function compactAuthSource(source) {
+  return source
+    .replace(/^~\/\.local\/share\/opencode\/auth\.json$/, 'opencode auth')
+    .replace(/^~\/\.config\/opencode\/auth\.json$/, 'opencode config')
+    .replace(/^~\/\.claude\.json$/, '~/.claude.json')
+    .replace(/^~\/\.claude$/, '~/.claude')
+    .replace(/^~\/\.codex$/, '~/.codex');
+}
+
+function agentRuntimeStatus(agent) {
+  return [
+    agent.runtime,
+    agent.detectedVersion ? `v ${agent.detectedVersion}` : '',
+    agent.authSources?.length ? agent.authSources.join(', ') : '',
+  ].filter(Boolean).join(' · ');
+}
+
+function compactRuntimeLabel(runtime) {
+  return {
+    'local-dispatch': 'local',
+    'custom-cli': 'custom',
+    'claude-code': 'Claude',
+    'claude-code-router': 'CCR',
+    codex: 'Codex',
+    opencode: 'OpenCode',
+  }[runtime] || runtime;
+}
+
+function shortTime(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
 function sourceLabel(source, modelProvider) {

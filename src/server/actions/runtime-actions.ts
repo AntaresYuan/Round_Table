@@ -1,5 +1,3 @@
-import { access } from 'node:fs/promises';
-import { delimiter, join } from 'node:path';
 import { id, mutateData, nowIso, readData } from '../store.js';
 import type {
   AgentEvent,
@@ -20,7 +18,6 @@ import {
   RUNTIME_DEFINITIONS,
   runtimeConfigForAgent,
   runtimeDefaultConfigForKind,
-  runtimeDefinition,
 } from './cli-runtimes/registry.js';
 import {
   isModelProviderConfigured,
@@ -34,6 +31,7 @@ import {
   type RuntimeExecutionCallbacks,
   type RuntimeTranscriptEntry,
 } from './cli-runtimes/runner.js';
+import { probeRuntime, type RuntimeProbe } from './cli-runtimes/probe.js';
 
 export type RuntimeState = {
   executionAdapter: string;
@@ -56,6 +54,10 @@ export type RuntimeState = {
     requiredEnvKeys: string[];
     ready: boolean;
     readyReason: string | null;
+    commandPath: string | null;
+    detectedVersion: string | null;
+    authConfigured: boolean;
+    authSources: string[];
   }>;
   agents: Array<{
     id: string;
@@ -69,6 +71,11 @@ export type RuntimeState = {
     interactionMode: AgentRuntimeInteractionMode | null;
     effort: AgentRuntimeEffort | null;
     configured: boolean;
+    ready: boolean;
+    readyReason: string | null;
+    detectedVersion: string | null;
+    authConfigured: boolean;
+    authSources: string[];
   }>;
   modelProviders: Array<{
     provider: ModelProviderKind;
@@ -101,9 +108,13 @@ export async function listRuntimeState(): Promise<RuntimeState> {
       requiredEnvKeys: definition.envKeys,
       ready: readiness.ready,
       readyReason: readiness.reason,
+      commandPath: readiness.commandPath,
+      detectedVersion: readiness.detectedVersion,
+      authConfigured: readiness.authConfigured,
+      authSources: readiness.authSources,
     };
   }));
-  const agents = AGENT_ROSTER.map((agent) => {
+  const agents = await Promise.all(AGENT_ROSTER.map(async (agent) => {
     const config = runtimeConfigForAgent(agent, data.agentRuntimeConfigs);
     const runtime = config?.runtime ?? configuredRuntimeForAgent(agent, data.agentRuntimeConfigs);
     const merged = mergedRuntimeConfigForAgent(
@@ -112,6 +123,7 @@ export async function listRuntimeState(): Promise<RuntimeState> {
       data.agentRuntimeConfigs,
       data.agentRuntimeDefaults,
     );
+    const readiness = await runtimeReadiness(runtime, merged);
     return {
       id: agent.id,
       name: agent.displayName,
@@ -124,8 +136,13 @@ export async function listRuntimeState(): Promise<RuntimeState> {
       interactionMode: merged?.interactionMode ?? null,
       effort: merged?.effort ?? null,
       configured: config !== null,
+      ready: readiness.ready,
+      readyReason: readiness.reason,
+      detectedVersion: readiness.detectedVersion,
+      authConfigured: readiness.authConfigured,
+      authSources: readiness.authSources,
     };
-  });
+  }));
   const modelProviders = await Promise.all(MODEL_PROVIDER_DEFINITIONS.map(async (definition) => ({
     provider: definition.provider,
     label: definition.label,
@@ -439,57 +456,18 @@ function sanitizeEnv(env: Record<string, string>): Record<string, string> {
 
 async function runtimeReadiness(
   kind: AgentRuntimeKind,
-  defaultConfig: AgentRuntimeDefaultConfig | null = null,
-): Promise<{ ready: boolean; reason: string | null }> {
-  const definition = runtimeDefinition(kind);
-  if (kind === 'local-dispatch') return { ready: true, reason: null };
-
-  const command = defaultConfig?.command
-    || process.env[`ROUNDTABLE_${kind.replace(/[^a-zA-Z0-9]+/g, '_').toUpperCase()}_COMMAND`]
-    || (kind === 'custom-cli' ? process.env.ROUNDTABLE_AGENT_COMMAND : undefined)
-    || definition.binary;
-  if (!command) {
-    return { ready: false, reason: definition.installHint ?? 'Set a runtime command.' };
+  config: AgentRuntimeConfig | AgentRuntimeDefaultConfig | null = null,
+): Promise<RuntimeProbe> {
+  const probe = await probeRuntime(kind, config);
+  if (!probe.ready) return probe;
+  if (config?.modelProvider && !(await isModelProviderConfigured(config.modelProvider))) {
+    return {
+      ...probe,
+      ready: false,
+      reason: `Missing API provider key: ${config.modelProvider}`,
+    };
   }
-
-  const commandFound = await commandAvailable(command);
-  if (!commandFound) return { ready: false, reason: `Missing command: ${command}` };
-
-  if (defaultConfig?.modelProvider && !(await isModelProviderConfigured(defaultConfig.modelProvider))) {
-    return { ready: false, reason: `Missing API provider key: ${defaultConfig.modelProvider}` };
-  }
-
-  const env = { ...process.env, ...(defaultConfig?.env ?? {}) };
-  const hasEnv = definition.envKeys.length === 0 || definition.envKeys.some((key) => Boolean(env[key]));
-  if (!hasEnv && kind !== 'codex' && kind !== 'claude-code') {
-    return { ready: false, reason: `Missing env: ${definition.envKeys.join(' or ')}` };
-  }
-  return { ready: true, reason: null };
-}
-
-async function commandAvailable(command: string): Promise<boolean> {
-  if (command.includes('/')) {
-    try {
-      await access(command);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-  return binaryOnPath(command);
-}
-
-async function binaryOnPath(binary: string): Promise<boolean> {
-  const pathValue = process.env.PATH || '';
-  for (const dir of pathValue.split(delimiter).filter(Boolean)) {
-    try {
-      await access(join(dir, binary));
-      return true;
-    } catch {
-      // keep looking
-    }
-  }
-  return false;
+  return probe;
 }
 
 function runtimeTimeoutMs(): number | undefined {

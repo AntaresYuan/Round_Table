@@ -72,7 +72,7 @@ fixer output) for secrets and dangerous code; high-severity findings block.
 | `ROUNDTABLE_AGENT_ADAPTER` | Behavior | Requires |
 | --- | --- | --- |
 | `local-dispatch` (default) | Deterministic template output; used by devrt/CI. | — |
-| `agent-cli` / `claude-cli` / `opencode` | Spawns a local coding CLI in the workspace. | `ROUNDTABLE_ENABLE_EXTERNAL_AGENT=1` |
+| `agent-cli` / `claude-cli` / `opencode` | Spawns the selected local CLI runtime (`claude-code`, `codex`, `opencode`, router, or custom command) in the workspace. Runtime status reports command path, detected version, and credential source before execution. | `ROUNDTABLE_ENABLE_EXTERNAL_AGENT=1`; CLI login or API key for the chosen runtime |
 | `e2b` | Runs the agent CLI inside an E2B sandbox. Falls back to `local-dispatch` (logged) if the key is missing. | `E2B_API_KEY` |
 | `minimax` | Runs each agent against the real MiniMax chat model (M3/M2.7). Strips `<think>` reasoning; falls back to `local-dispatch` if the key is missing. | `MINIMAX_API_KEY` |
 
