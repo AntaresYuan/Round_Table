@@ -285,7 +285,7 @@ describe('Roundtable clean workflow', () => {
 async function configureRuntimeOutput(agentId: string, text: string): Promise<void> {
   await saveAgentRuntimeConfig({
     agentId,
-    runtime: 'custom-cli',
+    runtime: 'claude-code',
     command: process.execPath,
     args: ['-e', `process.stdout.write(${JSON.stringify(text)})`],
   });

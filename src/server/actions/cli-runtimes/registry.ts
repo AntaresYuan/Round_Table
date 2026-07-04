@@ -24,16 +24,6 @@ export const RUNTIME_DEFINITIONS: RuntimeDefinition[] = [
     structured: false,
   },
   {
-    kind: 'custom-cli',
-    label: 'Custom CLI',
-    description: 'Runs the configured command and treats stdout as the agent reply.',
-    binary: null,
-    installHint: 'Set ROUNDTABLE_AGENT_COMMAND or an agent runtime command.',
-    envKeys: [],
-    modelEnvKeys: [],
-    structured: false,
-  },
-  {
     kind: 'claude-code',
     label: 'Claude Code',
     description: 'Anthropic Claude Code CLI using stream-json output.',
@@ -83,7 +73,9 @@ export function normalizeRuntimeKind(value: string | null | undefined): AgentRun
   const raw = (value ?? '').trim().toLowerCase();
   if (!raw) return null;
   if (raw === 'local' || raw === 'local-dispatch') return 'local-dispatch';
-  if (raw === 'custom' || raw === 'custom-cli' || raw === 'agent-cli' || raw === 'external-cli') return 'custom-cli';
+  // The custom-cli runtime was removed: stored configs and env values that
+  // still name it fold into the Claude Code default.
+  if (raw === 'custom' || raw === 'custom-cli' || raw === 'agent-cli' || raw === 'external-cli') return 'claude-code';
   if (raw === 'claude-code-router' || raw === 'claude-router' || raw === 'ccr') return 'claude-code-router';
   if (raw === 'claude' || raw === 'claude-code' || raw === 'claude-cli') return 'claude-code';
   if (raw === 'codex' || raw === 'codex-cli' || raw === 'openai-codex') return 'codex';
@@ -97,7 +89,9 @@ export function configuredRuntimeForAgent(
   env: NodeJS.ProcessEnv = process.env,
 ): AgentRuntimeKind {
   const byAgent = configs.find((config) => config.agentId === agent.id);
-  if (byAgent) return byAgent.runtime;
+  // Stored configs can predate the removal of custom-cli; normalize them so a
+  // legacy value degrades to a real runtime instead of leaking through.
+  if (byAgent) return normalizeRuntimeKind(byAgent.runtime) ?? 'claude-code';
 
   const fromAgentEnv = normalizeRuntimeKind(env[`ROUNDTABLE_AGENT_RUNTIME_${envKey(agent.id)}`]);
   if (fromAgentEnv) return fromAgentEnv;
@@ -108,7 +102,6 @@ export function configuredRuntimeForAgent(
   const fromGlobalEnv = normalizeRuntimeKind(env.ROUNDTABLE_AGENT_RUNTIME);
   if (fromGlobalEnv) return fromGlobalEnv;
 
-  if (env.ROUNDTABLE_AGENT_COMMAND) return 'custom-cli';
   if (agent.role === 'reviewer' && env.ROUNDTABLE_REVIEWER_PREFERS_OPENCODE === '1') return 'opencode';
   return 'claude-code';
 }

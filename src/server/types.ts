@@ -109,7 +109,6 @@ export type AgentRole = 'planner' | 'pm' | 'architect' | 'implementer' | 'review
 
 export type AgentRuntimeKind =
   | 'local-dispatch'
-  | 'custom-cli'
   | 'claude-code'
   | 'claude-code-router'
   | 'codex'

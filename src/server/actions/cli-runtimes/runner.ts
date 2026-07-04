@@ -4,7 +4,7 @@ import { join, resolve } from 'node:path';
 import type { AgentEvent, AgentRuntimeConfig, AgentRuntimeKind, ModelProviderKind } from '../../types.js';
 import { defaultConfiguredModelProvider, resolveModelProvider } from '../settings-actions.js';
 import type { AgentProfile } from '../agent-roster.js';
-import { envKey, runtimeDefinition } from './registry.js';
+import { runtimeDefinition } from './registry.js';
 import { assertRuntimeReady, resolveRuntimeCommand, runtimeEnvName } from './probe.js';
 
 export type RuntimeExecutionResult = {
@@ -93,8 +93,18 @@ export async function executeCliRuntime(input: RuntimeExecutionInput): Promise<R
     windowsHide: true,
   });
   activeProcesses.set(input.conversationId, child);
-  await input.callbacks?.onCommand?.(commandSpec.display, child.pid ?? null);
 
+  // Observe the exit BEFORE any await: a command that crashes in milliseconds
+  // would otherwise emit 'close' while onCommand persistence is still in
+  // flight, and a listener attached after the fact never fires — the run then
+  // hangs as "running" forever.
+  const exited = new Promise<number>((resolve, reject) => {
+    child.on('error', reject);
+    child.on('close', (code) => resolve(code ?? 1));
+  });
+  // The child may already be dead when stdin flushes; without a handler the
+  // resulting EPIPE surfaces as an uncaught stream error.
+  child.stdin.on('error', () => {});
   if (commandSpec.stdin !== null) {
     child.stdin.write(commandSpec.stdin, 'utf8');
   }
@@ -128,10 +138,9 @@ export async function executeCliRuntime(input: RuntimeExecutionInput): Promise<R
       }, idleTimeoutMs)
     : null;
 
-  const exitCode = await new Promise<number>((resolve, reject) => {
-    child.on('error', reject);
-    child.on('close', (code) => resolve(code ?? 1));
-  });
+  await input.callbacks?.onCommand?.(commandSpec.display, child.pid ?? null);
+
+  const exitCode = await exited;
   if (totalTimer) clearTimeout(totalTimer);
   if (idleTimer) clearTimeout(idleTimer);
   activeProcesses.delete(input.conversationId);
@@ -196,7 +205,6 @@ type CommandSpec = {
 async function commandForRuntime(input: RuntimeExecutionInput): Promise<CommandSpec> {
   const runtimeEnv = input.envSnapshot ?? process.env;
   const env = await buildRuntimeEnv(input.runtime, input.config, runtimeEnv);
-  if (input.runtime === 'custom-cli') return customCommand(input, env);
 
   const command = input.config?.command
     || runtimeEnv[`ROUNDTABLE_${runtimeEnvName(input.runtime)}_COMMAND`]
@@ -244,28 +252,7 @@ async function commandForRuntime(input: RuntimeExecutionInput): Promise<CommandS
     return commandSpec(resolvedCommand, args, input.prompt, env);
   }
 
-  return customCommand(input, env);
-}
-
-function customCommand(input: RuntimeExecutionInput, env: NodeJS.ProcessEnv): CommandSpec {
-  const runtimeEnv = input.envSnapshot ?? process.env;
-  const command = input.config?.command
-    || runtimeEnv[`ROUNDTABLE_AGENT_COMMAND_${envKey(input.agent.id)}`]
-    || runtimeEnv[`ROUNDTABLE_AGENT_COMMAND_${envKey(input.agent.role)}`]
-    || runtimeEnv.ROUNDTABLE_AGENT_COMMAND
-    || defaultCustomCommand(input.agent, runtimeEnv);
-  const configured = input.config?.args.length
-    ? input.config.args
-    : splitArgs(
-      runtimeEnv[`ROUNDTABLE_AGENT_ARGS_${envKey(input.agent.id)}`]
-      || runtimeEnv[`ROUNDTABLE_AGENT_ARGS_${envKey(input.agent.role)}`]
-      || runtimeEnv.ROUNDTABLE_AGENT_ARGS
-      || '',
-    );
-  const args = configured.length > 0
-    ? substitutePrompt(configured, input.prompt, 'stdin')
-    : defaultCustomArgs(command, input.prompt);
-  return commandSpec(command, args, null, env);
+  throw new Error(`unsupported_runtime:${input.runtime}`);
 }
 
 function commandSpec(command: string, args: string[], stdin: string | null, env: NodeJS.ProcessEnv): CommandSpec {
@@ -467,16 +454,6 @@ function providerQualifiedOpenCodeModel(model: string, env: NodeJS.ProcessEnv): 
   const baseUrl = (env.OPENAI_BASE_URL || env.LLM_BASE_URL || '').toLowerCase();
   const provider = env.ANTHROPIC_API_KEY || baseUrl.includes('anthropic') ? 'anthropic' : 'openai';
   return `${provider}/${model}`;
-}
-
-function defaultCustomCommand(agent: AgentProfile, runtimeEnv: NodeJS.ProcessEnv): string {
-  if (agent.role === 'reviewer' && runtimeEnv.ROUNDTABLE_REVIEWER_PREFERS_OPENCODE === '1') return 'opencode';
-  return 'claude';
-}
-
-function defaultCustomArgs(command: string, prompt: string): string[] {
-  if (command.endsWith('opencode') || command.includes('/opencode')) return ['run', prompt];
-  return ['-p', prompt, '--permission-mode', 'auto'];
 }
 
 function substitutePrompt(args: string[], prompt: string, mode: 'argv' | 'stdin' = 'argv'): string[] {

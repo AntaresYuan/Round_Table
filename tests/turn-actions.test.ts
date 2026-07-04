@@ -222,7 +222,7 @@ describe('dispatchTurn — DAG scheduler integration', () => {
     const activity = listed?.liveActivity?.[atlasTaskId];
 
     expect(activity).toBeDefined();
-    expect(activity).toMatchObject({ agentId: 'atlas', runtime: 'custom-cli', status: 'completed' });
+    expect(activity).toMatchObject({ agentId: 'atlas', runtime: 'claude-code', status: 'completed' });
     expect(activity?.transcript.some((entry) => entry.kind === 'response' || entry.kind === 'thinking')).toBe(true);
     // The stored turn itself stays lean: live activity is a response-time view.
     expect((await getTurn(turn.id))).not.toHaveProperty('liveActivity');
@@ -258,7 +258,7 @@ describe('dispatchTurn — DAG scheduler integration', () => {
 async function configureRuntimeOutput(agentId: string, text: string): Promise<void> {
   await saveAgentRuntimeConfig({
     agentId,
-    runtime: 'custom-cli',
+    runtime: 'claude-code',
     command: process.execPath,
     args: ['-e', `process.stdout.write(${JSON.stringify(text)})`],
   });

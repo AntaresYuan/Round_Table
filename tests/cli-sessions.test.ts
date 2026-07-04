@@ -46,7 +46,6 @@ describe('cli session registry — chat-scoped resume state', () => {
     expect(runtimeSupportsResume('claude-code-router')).toBe(true);
     expect(runtimeSupportsResume('codex')).toBe(false);
     expect(runtimeSupportsResume('opencode')).toBe(false);
-    expect(runtimeSupportsResume('custom-cli')).toBe(false);
   });
 });
 
@@ -130,6 +129,60 @@ describe('executeCliRuntime — captures CLI-native session ids', () => {
     expect(result.ok).toBe(true);
     expect(result.sessionId).toBeNull();
   });
+});
+
+describe('executeCliRuntime — fast-exit children are still observed', () => {
+  it('resolves with the failure when the child crashes while onCommand persistence is in flight', async () => {
+    // Regression: a command that exits in milliseconds (e.g. a broken stub)
+    // used to race the awaited onCommand callback — the close listener was
+    // attached too late, the exit was missed, and the run hung as "running"
+    // forever with no output.
+    const result = await executeCliRuntime({
+      conversationId: 'fast-exit-test',
+      runtime: 'claude-code-router',
+      agent: agent('atlas'),
+      config: runtimeConfig('atlas', 'claude-code-router', [
+        '-e',
+        'process.stdout.write("Looks', // word-split stub: instant SyntaxError, exit 1
+      ]),
+      workspace: tempDir,
+      prompt: 'ignored prompt',
+      timeoutMs: 10_000,
+      callbacks: {
+        onCommand: async () => {
+          // Simulate the slow store write (the real one persists a multi-MB
+          // data.json) that the child's exit used to slip past.
+          await new Promise((resolve) => setTimeout(resolve, 300));
+        },
+      },
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('runtime_exit_1');
+  }, 8_000);
+
+  it('still streams and completes for a child that outlives the onCommand persistence', async () => {
+    const result = await executeCliRuntime({
+      conversationId: 'slow-child-test',
+      runtime: 'claude-code',
+      agent: agent('atlas'),
+      config: runtimeConfig('atlas', 'claude-code', [
+        '-e',
+        'setTimeout(()=>{process.stdout.write(JSON.stringify({type:"assistant",message:{content:[{type:"text",text:"done"}]}})+"\\n")},400)',
+      ]),
+      workspace: tempDir,
+      prompt: 'ignored prompt',
+      timeoutMs: 10_000,
+      callbacks: {
+        onCommand: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 200));
+        },
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.text).toBe('done');
+  }, 8_000);
 });
 
 function agent(id: string) {

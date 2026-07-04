@@ -130,7 +130,6 @@ function configuredCommand(
   const definition = runtimeDefinition(kind);
   return config?.command
     || runtimeEnv[`ROUNDTABLE_${runtimeEnvName(kind)}_COMMAND`]
-    || (kind === 'custom-cli' ? runtimeEnv.ROUNDTABLE_AGENT_COMMAND : undefined)
     || definition.binary;
 }
 

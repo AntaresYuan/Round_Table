@@ -657,7 +657,6 @@ function agentRuntimeStatus(agent) {
 function compactRuntimeLabel(runtime) {
   return {
     'local-dispatch': 'local',
-    'custom-cli': 'custom',
     'claude-code': 'Claude',
     'claude-code-router': 'CCR',
     codex: 'Codex',

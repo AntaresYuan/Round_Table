@@ -111,9 +111,9 @@ describe('CLI runtime runner', () => {
   it('surfaces stderr in failure text and error detail when a runtime exits non-zero', async () => {
     const result = await executeCliRuntime({
       conversationId: 'stderr-test',
-      runtime: 'custom-cli',
+      runtime: 'claude-code',
       agent: agent('atlas'),
-      config: runtimeConfig('atlas', 'custom-cli', [
+      config: runtimeConfig('atlas', 'claude-code', [
         '-e',
         [
           'process.stdout.write("Service not running, starting service...");',
@@ -138,9 +138,9 @@ describe('CLI runtime runner', () => {
   it('fails a runtime only after the idle window has no output', async () => {
     const result = await executeCliRuntime({
       conversationId: 'idle-timeout-test',
-      runtime: 'custom-cli',
+      runtime: 'claude-code',
       agent: agent('atlas'),
-      config: runtimeConfig('atlas', 'custom-cli', [
+      config: runtimeConfig('atlas', 'claude-code', [
         '-e',
         [
           'process.stdout.write("started\\n");',
@@ -389,7 +389,7 @@ describe('runtime config and workflow dispatch integration', () => {
   it('dispatches an agent task through the saved CLI runtime and records the conversation', async () => {
     await saveAgentRuntimeConfig({
       agentId: 'atlas',
-      runtime: 'custom-cli',
+      runtime: 'claude-code',
       command: process.execPath,
       args: ['-e', 'process.stdout.write("custom runtime ok")'],
     });
@@ -408,7 +408,7 @@ describe('runtime config and workflow dispatch integration', () => {
     expect(conversations).toHaveLength(1);
     expect(conversations[0]).toMatchObject({
       agentId: 'atlas',
-      runtime: 'custom-cli',
+      runtime: 'claude-code',
       taskId: 'task_atlas_runtime',
       turnId: 'turn-runtime-test',
       status: 'completed',
@@ -417,13 +417,13 @@ describe('runtime config and workflow dispatch integration', () => {
 
   it('dispatches through a runtime default when an agent only selects the runtime', async () => {
     await saveRuntimeDefaultConfig({
-      runtime: 'custom-cli',
+      runtime: 'claude-code',
       command: process.execPath,
       args: ['-e', 'process.stdout.write("default runtime ok")'],
     });
     await saveAgentRuntimeConfig({
       agentId: 'atlas',
-      runtime: 'custom-cli',
+      runtime: 'claude-code',
     });
 
     const result = await runAgentTask({
@@ -439,7 +439,7 @@ describe('runtime config and workflow dispatch integration', () => {
     expect(result.text).toBe('default runtime ok');
     expect(conversations[0]).toMatchObject({
       agentId: 'atlas',
-      runtime: 'custom-cli',
+      runtime: 'claude-code',
       status: 'completed',
     });
   }, 10_000);
