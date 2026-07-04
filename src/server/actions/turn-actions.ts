@@ -23,6 +23,6 @@ export {
 export { decideTurnFinalDelivery, type FinalDeliveryInput } from './turns/final-delivery.js';
 export { deleteTurn, getTurn, listTurns } from './turns/turn-store.js';
 export { plannedTaskPatches } from './turns/planning.js';
-export { makeFixerTask, repairedTargetArtifact, reviewSeverities } from './turns/fix-loop.js';
+export { isReviewGateTask, makeFixerTask, repairedTargetArtifact, reviewSeverities } from './turns/fix-loop.js';
 export { type DispatchResponse, type TurnResponse } from './turns/responses.js';
 export { ActionError } from './turns/errors.js';

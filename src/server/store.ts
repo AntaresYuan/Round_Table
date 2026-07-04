@@ -74,16 +74,32 @@ export async function writeData(data: RoundtableData): Promise<void> {
     await writePostgresData(data);
     return;
   }
-  await writeJsonData(data);
+  await withJsonLock(() => writeJsonData(data));
 }
 
 export async function mutateData<T>(fn: (data: RoundtableData) => T | Promise<T>): Promise<T> {
   if (useNormalizedPostgresStore()) return mutateNormalizedPostgresData(fn);
   if (usePostgresStore()) return mutatePostgresData(fn);
-  const data = await readJsonData();
-  const result = await fn(data);
-  await writeJsonData(data);
-  return result;
+  return withJsonLock(async () => {
+    const data = await readJsonData();
+    const result = await fn(data);
+    await writeJsonData(data);
+    return result;
+  });
+}
+
+// The JSON store is one shared file mutated by read-modify-write: concurrent
+// callers (parallel scheduler waves, runtime-conversation updates from several
+// agents) would silently drop each other's changes — and interleaved writes to
+// the shared temp file tear it into invalid JSON. Serialize every mutation
+// through an in-process promise chain.
+let jsonLock: Promise<unknown> = Promise.resolve();
+
+function withJsonLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = jsonLock.then(fn);
+  // A failed mutation must not wedge the chain for every later caller.
+  jsonLock = run.catch(() => undefined);
+  return run;
 }
 
 export async function resetData(): Promise<void> {
@@ -100,10 +116,15 @@ async function readJsonData(): Promise<RoundtableData> {
   }
 }
 
+let writeSeq = 0;
+
 async function writeJsonData(data: RoundtableData): Promise<void> {
   const target = dataPath();
   await mkdir(dirname(target), { recursive: true });
-  const temp = `${target}.${process.pid}.tmp`;
+  // Unique per write: a pid-only name collides when two writers in the same
+  // process interleave (or two dev processes share the file), tearing the temp
+  // file before the atomic rename.
+  const temp = `${target}.${process.pid}.${++writeSeq}.tmp`;
   await writeFile(temp, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
   await rename(temp, target);
 }

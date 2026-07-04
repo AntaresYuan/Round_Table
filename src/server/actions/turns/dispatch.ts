@@ -25,6 +25,7 @@ import { resolveDefaultAgentAdapter } from '../settings-actions.js';
 import { artifactsFromRun, finalReportArtifact, reviewerSummaryArtifact, upsertArtifacts } from './artifacts.js';
 import { ActionError } from './errors.js';
 import {
+  isReviewGateTask,
   makeFixerTask,
   maxFixRounds,
   repairedTargetArtifact,
@@ -297,7 +298,9 @@ export async function dispatchTurn(input: DispatchInput): Promise<DispatchRespon
     // trigger a fix, not silently end the run. Treat such a review as a failure
     // so the scheduler derives a fixer via onFailure (bounded by maxFixRounds);
     // the fixer receives this review as its repair context. A clean review passes.
-    if (task.role === 'reviewer' && reviewRequestsFix()) {
+    // The architect's post-build check (role architect, review stage) gates the
+    // same way: blocking architecture findings get a fix round too.
+    if (isReviewGateTask(task) && reviewRequestsFix()) {
       const severities = reviewSeverities(result.text);
       if (severities.blocking > 0) {
         return {

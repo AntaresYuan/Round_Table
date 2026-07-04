@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runAgentTask } from '../src/server/actions/agent-runner.js';
 import { resetData } from '../src/server/store.js';
 import {
+  isReviewGateTask,
   makeFixerTask,
   plannedTaskPatches,
   repairedTargetArtifact,
@@ -34,6 +35,36 @@ function scheduled(overrides: Partial<ScheduledTask> & { id: string }): Schedule
     ...overrides,
   };
 }
+
+describe('isReviewGateTask — which tasks gate delivery through the fix loop', () => {
+  it('gates the quality reviewer and the architect post-build check, not the design pass', () => {
+    expect(isReviewGateTask({ role: 'reviewer', stageId: 'review' })).toBe(true);
+    // Architect's post-build check gates like a review …
+    expect(isReviewGateTask({ role: 'architect', stageId: 'review' })).toBe(true);
+    // … but its upfront design pass (plan stage) must not.
+    expect(isReviewGateTask({ role: 'architect', stageId: 'plan' })).toBe(false);
+    expect(isReviewGateTask({ role: 'implementer', stageId: 'build' })).toBe(false);
+  });
+
+  it('derives a review-style fixer from a failed architecture check', () => {
+    const failed = scheduled({
+      id: 'task_nova_check',
+      role: 'architect',
+      stageId: 'review',
+      assignee: '@nova',
+      owner: 'nova',
+      deps: ['task_atlas'],
+    });
+    const fixer = makeFixerTask(failed, {
+      message: 'review_found_issues: 1 critical · 0 high',
+      review: '# Architecture check\n\nCritical: hardcoded API URL duplicated across 4 files',
+    });
+    expect(fixer.title).toContain('Apply review fixes');
+    expect(fixer.brief).toContain('hardcoded API URL');
+    expect(fixer.deps).toContain('task_nova_check');
+    expect(fixer.deps).toContain('task_atlas');
+  });
+});
 
 describe('makeFixerTask — repair context deps', () => {
   it('inherits the failed reviewer deps so the fixer sees the reviewed deliverable', () => {

@@ -15,6 +15,13 @@ export function reviewRequestsFix(): boolean {
   return process.env.ROUNDTABLE_REVIEW_TRIGGERS_FIX !== 'false';
 }
 
+// Tasks whose report gates delivery through the review→fix loop: the quality
+// reviewer, and the architect's post-build check (role architect in the review
+// stage — its upfront design task in the plan stage is NOT a gate).
+export function isReviewGateTask(task: { role?: string | undefined; stageId?: string | undefined }): boolean {
+  return task.role === 'reviewer' || (task.role === 'architect' && task.stageId === 'review');
+}
+
 // Parse a reviewer's Markdown report for severity signals. Counts Critical/High
 // (blocking) mentions across EN + 中文 wording. Heuristic by design: reviewers
 // write prose, and a count > 0 is enough to decide "this needs a fix pass".
@@ -41,7 +48,7 @@ export function makeFixerTask(
 ): PlanTask {
   const fixer = AGENT_ROSTER.find((agent) => agent.role === 'fixer') ?? AGENT_ROSTER[0]!;
   const round = (failed.fixRound ?? 0) + 1;
-  const fromReview = failed.role === 'reviewer';
+  const fromReview = isReviewGateTask(failed);
   // A failed planning task must be repaired by RE-PLANNING, not by implementing:
   // a fixer with full tool access would otherwise "repair the plan" by building
   // the product in the shared workspace before the plan stage even completes.

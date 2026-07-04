@@ -65,8 +65,10 @@ describe('Roundtable clean workflow', () => {
     // agent runs.
     expect(turn.approvalStatus).toBe('pending');
     expect(turn.needsApproval).toBe(true);
-    expect(turn.plan.tasks).toHaveLength(3);
+    // Default chain: planning → architecture (nova) → build → review + arch check.
+    expect(turn.plan.tasks).toHaveLength(5);
     expect(turn.plan.tasks[0]?.owner).toBe('orchestrator');
+    expect(turn.plan.tasks.map((task) => task.owner)).toContain('nova');
     expect(turn.plan.tasks.map((task) => task.owner)).toContain('atlas');
     expect(turn.plan.tasks.map((task) => task.owner)).toContain('vera');
     expect(turn.plan.tasks.every((task) => Array.isArray(task.deps))).toBe(true);
@@ -81,7 +83,7 @@ describe('Roundtable clean workflow', () => {
     });
 
     expect(approval.dispatchStatus).toBe('completed');
-    expect(approval.records).toHaveLength(3);
+    expect(approval.records).toHaveLength(5);
     expect(approval.artifacts.length).toBeGreaterThanOrEqual(3);
     expect(approval.workspacePath).toContain('workspaces/test');
     expect(approval.artifacts.find((artifact) => artifact.id.startsWith('task_vera_'))?.preview)
@@ -215,15 +217,20 @@ describe('Roundtable clean workflow', () => {
     expect(cleanZh.blocking).toBe(0);
   });
 
-  it('defaults unmentioned backend work to planning, backend implementation, and review', async () => {
+  it('defaults unmentioned backend work to planning, architecture, backend implementation, and reviews', async () => {
     const turn = await createTurn({
       actor,
       message: 'Build an API endpoint for user login and review it.',
     });
 
-    expect(turn.plan.tasks.map((task) => task.owner)).toEqual(['orchestrator', 'beam', 'vera']);
+    expect(turn.plan.tasks.map((task) => task.owner)).toEqual(['orchestrator', 'nova', 'beam', 'vera', 'nova']);
     expect(turn.plan.tasks[1]?.deps).toEqual(['task_planning']);
-    expect(turn.plan.tasks[2]?.deps).toEqual(['task_beam']);
+    expect(turn.plan.tasks[2]?.deps).toEqual(['task_planning', 'task_nova']);
+    expect(turn.plan.tasks[3]?.deps).toEqual(['task_beam']);
+    // The architecture check reviews the build in parallel with the quality review.
+    expect(turn.plan.tasks[4]?.id).toBe('task_nova_check');
+    expect(turn.plan.tasks[4]?.deps).toEqual(['task_beam']);
+    expect(turn.plan.tasks[4]?.stageId).toBe('review');
   });
 
   it('ignores stale external adapter requests unless explicitly enabled', () => {
@@ -240,6 +247,7 @@ describe('Roundtable clean workflow', () => {
 
   it('can dispatch through an explicitly enabled external CLI command adapter', async () => {
     await configureRuntimeOutput('orchestrator', 'external planner output');
+    await configureRuntimeOutput('nova', 'external architecture output');
     await configureRuntimeOutput('atlas', 'external implementer output');
     await configureRuntimeOutput('vera', 'external reviewer output');
 
@@ -268,7 +276,9 @@ describe('Roundtable clean workflow', () => {
     expect(approval.dispatchAdapter).toBe('agent-cli');
     expect(approval.dispatchStatus).toBe('completed');
     expect(approval.records.every((record) => record.events.some((event) => event.type === 'tool_use'))).toBe(true);
-  });
+    // Spawns one node fixture per task (5 with the architect bracket); under
+    // full-suite CPU contention the default 5s budget flakes.
+  }, 30_000);
 });
 
 async function configureRuntimeOutput(agentId: string, text: string): Promise<void> {

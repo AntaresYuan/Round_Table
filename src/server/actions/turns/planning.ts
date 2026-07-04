@@ -63,12 +63,19 @@ export function planFromMessage(
   if (!hasExplicitMention) {
     const implementer = implementerForMessage(message);
     const reviewerAgent = reviewer();
+    const architectAgent = architect();
+    // The architect brackets the build: an upfront design pass (module
+    // boundaries, contracts, reuse map — before any code exists) and a
+    // post-build architecture check that gates delivery alongside the quality
+    // review. Both reviews depend only on the build so they run in parallel.
     return {
       summary: `Plan for: ${base}`,
       tasks: [
         taskForAgent('task_planning', `Plan ${base}`, planner(), goal, [], false, 'plan', workingStyle),
-        taskForAgent(`task_${implementer.id}`, titleForAgent(implementer, base), implementer, goal, ['task_planning'], false, 'build', workingStyle),
+        taskForAgent(`task_${architectAgent.id}`, titleForAgent(architectAgent, base), architectAgent, goal, ['task_planning'], false, 'plan', workingStyle),
+        taskForAgent(`task_${implementer.id}`, titleForAgent(implementer, base), implementer, goal, ['task_planning', `task_${architectAgent.id}`], false, 'build', workingStyle),
         taskForAgent(`task_${reviewerAgent.id}`, titleForAgent(reviewerAgent, base), reviewerAgent, goal, [`task_${implementer.id}`], false, 'review', workingStyle),
+        taskForAgent(`task_${architectAgent.id}_check`, 'Architecture check · awaits the build', architectAgent, goal, [`task_${implementer.id}`], false, 'review', workingStyle),
       ],
     };
   }
@@ -139,9 +146,13 @@ function stageIdForAgent(agent: AgentProfile): string {
 // Concrete title for a downstream task AFTER the planner has run. At this point
 // the plan defines the work, so naming the goal is accurate (not a guess). Used
 // by retitleDownstreamTasks() to replace the "awaiting plan" placeholders.
-function plannedTitleForRole(role: string | undefined, displayName: string, goal: string): string {
+function plannedTitleForRole(role: string | undefined, stageId: string | undefined, displayName: string, goal: string): string {
   if (role === 'pm') return `Product brief for ${goal}`;
-  if (role === 'architect') return `Architecture for ${goal}`;
+  // The architect appears twice in the default chain: design (plan stage)
+  // before the build, and the architecture check (review stage) after it.
+  if (role === 'architect') {
+    return stageId === 'review' ? `Architecture check for ${goal}` : `Architecture for ${goal}`;
+  }
   if (role === 'implementer') return `Build ${goal} (${displayName})`;
   if (role === 'reviewer') return `Review ${goal}`;
   if (role === 'fixer') return `Fix issues for ${goal}`;
@@ -177,7 +188,7 @@ export function plannedTaskPatches(
   const patches = new Map<string, { title: string; brief: string }>();
   for (const task of tasks) {
     if (!downstream.has(task.id)) continue;
-    const title = plannedTitleForRole(task.role, ownerName(task), goal);
+    const title = plannedTitleForRole(task.role, task.stageId, ownerName(task), goal);
     patches.set(task.id, {
       title,
       // Mirror taskForAgent()'s brief shape so the handoff card reads the same.
@@ -213,6 +224,10 @@ function planner(): AgentProfile {
 
 function reviewer(): AgentProfile {
   return AGENT_ROSTER.find((agent) => agent.role === 'reviewer') ?? planner();
+}
+
+function architect(): AgentProfile {
+  return AGENT_ROSTER.find((agent) => agent.role === 'architect') ?? planner();
 }
 
 function implementerForMessage(message: string): AgentProfile {
