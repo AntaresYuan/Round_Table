@@ -40,12 +40,17 @@ export type Artifact = {
   chatId: string;
   kind: ArtifactKind;
   title: string;
+  // The agent that produced the CURRENT version — on a version bump this is
+  // updated to the last editor, which is what makes per-file blame possible.
   ownerAgentId: string;
   version: number;
   uri: string;
   preview: string | null;
   code: string | null;
   createdAt: string;
+  // Line-level stats for the latest version: all-added on creation, computed
+  // against the previous version on each bump. Absent on legacy artifacts.
+  change?: { added: number; removed: number } | null;
 };
 
 export type WorkflowSeat =
@@ -395,6 +400,10 @@ export type DispatchRecord = {
   // fix attempt, and how many fix rounds had run for that branch.
   producedFor?: string | undefined;
   fixRound?: number | undefined;
+  // Every artifact this task's run produced or edited (transcript + workspace
+  // files) — the per-agent attribution link the conversation UI renders.
+  // Absent on records persisted before this field existed.
+  artifactIds?: string[] | undefined;
 };
 
 export type WorkflowStageRunStatus = 'pending' | 'active' | 'running' | 'done' | 'blocked' | 'failed';

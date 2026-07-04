@@ -274,6 +274,7 @@ function LocalLiveTurn({ turn, agents, turnActions, showPreview }) {
                   agents={agents}
                   dispatchStatus={turn.result.dispatchStatus}
                   liveActivity={turn.result.liveActivity}
+                  records={turn.result.dispatch}
                 />
               )}
               {(completed || failed || running || interrupted) && !(interrupted && turn.discarded) && (
@@ -407,7 +408,7 @@ function LiveTranscriptFeed({ activity, agents, compact }) {
 // Per-stage card: as the workflow advances, each stage that starts gets its own
 // card showing who's on it, live status, and the artifacts they produced. This
 // is the "new stage → new card" timeline (not a tab/strip).
-function StageCard({ stage, stageRun, artifacts, agents, liveActivity }) {
+function StageCard({ stage, stageRun, artifacts, agents, liveActivity, records }) {
   const status = stageRun?.status || 'pending';
   const sty = STAGE_STATUS_STYLE[status] || STAGE_STATUS_STYLE.pending;
   const roles = new Set(
@@ -415,8 +416,14 @@ function StageCard({ stage, stageRun, artifacts, agents, liveActivity }) {
   );
   const explicitIds = new Set(stageRun?.artifactIds || []);
   const taskIds = new Set(stageRun?.taskIds || []);
+  // Dispatch records carry the per-task artifact attribution (including real
+  // workspace files, whose ids are path-keyed and never taskId-prefixed).
+  const recordIds = new Set((records || [])
+    .filter((record) => taskIds.has(record.taskId))
+    .flatMap((record) => record.artifactIds || []));
   const stageArtifacts = artifacts.filter((a) =>
     explicitIds.has(a.id)
+    || recordIds.has(a.id)
     || [...taskIds].some((taskId) => a.id.startsWith(`${taskId}_`))
     || roles.has(a.ownerAgentId),
   );
@@ -592,7 +599,7 @@ function LocalInterruptedCard({ turn, agents, artifacts, onResume, onDiscard, on
 // store only holds the initial all-pending projection, so we synthesize an
 // "active" marker on the first unfinished stage to keep the run from looking
 // frozen until completion.
-function StageCards({ workflow, workflowRun, artifacts, agents, dispatchStatus, liveActivity }) {
+function StageCards({ workflow, workflowRun, artifacts, agents, dispatchStatus, liveActivity, records }) {
   if (!workflow || !workflowRun) return null;
   const stages = workflow.stages.filter(
     (s) => {
@@ -643,6 +650,7 @@ function StageCards({ workflow, workflowRun, artifacts, agents, dispatchStatus, 
             artifacts={artifacts}
             agents={agents}
             liveActivity={liveActivity}
+            records={records}
           />
         );
       })}
@@ -671,7 +679,18 @@ function AgentChainCard({ plan, records, artifacts, agents, dispatchStatus, disp
     if (agents[target]) return agents[target];
     return Object.values(agents).find((agent) => agent.role === target && !agent.pm) || agents.orchestrator;
   };
-  const artifactFor = (taskId) => artifacts.find((artifact) => artifact.id.startsWith(`${taskId}_`));
+  // Everything this task's agent produced or edited: records persisted after
+  // per-task attribution landed carry explicit artifactIds; older records fall
+  // back to the task-prefixed transcript artifact. Real workspace files sort
+  // before this system's own run logs — the files are the deliverable.
+  const artifactsFor = (record) => {
+    const ids = new Set(record.artifactIds || []);
+    const matched = ids.size > 0
+      ? artifacts.filter((artifact) => ids.has(artifact.id))
+      : artifacts.filter((artifact) => artifact.id.startsWith(`${record.taskId}_`));
+    const isRunLog = (artifact) => (artifact.title || '').startsWith('.roundtable/runs/') ? 1 : 0;
+    return [...matched].sort((a, b) => isRunLog(a) - isRunLog(b));
+  };
 
   return (
     <div style={{ marginTop: 6, display: 'grid', gap: 10 }}>
@@ -694,22 +713,31 @@ function AgentChainCard({ plan, records, artifacts, agents, dispatchStatus, disp
       ) : visibleRecords.map((record) => {
         const task = taskById.get(record.taskId);
         const owner = ownerFor(task, record);
-        const artifact = artifactFor(record.taskId);
+        const taskArtifacts = artifactsFor(record);
         return (
           <div key={record.taskId} style={{ borderLeft: `2px solid ${alpha(owner.color, 60)}`, paddingLeft: 12 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
               <Avatar agent={owner} size={24} ring={false} />
               <span style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--text)' }}>{owner.displayName}</span>
               <span className="mono" style={{ fontSize: 11, color: 'var(--text-faint)' }}>@{owner.mention || owner.agentId || owner.role}</span>
+              {taskArtifacts.length > 1 && (
+                <span className="mono tnum" style={{ fontSize: 10.5, color: 'var(--text-faint)' }}>
+                  {taskArtifacts.length} files
+                </span>
+              )}
               <span style={{ marginLeft: 'auto', fontSize: 11, color: record.status === 'failed' ? 'var(--bad)' : 'var(--ok)', fontWeight: 700 }}>
                 {record.status}
               </span>
             </div>
             {task?.title && (
-              <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: artifact ? 8 : 0 }}>{task.title}</div>
+              <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: taskArtifacts.length > 0 ? 8 : 0 }}>{task.title}</div>
             )}
-            {artifact ? (
-              <ExpandableArtifact artifact={artifact} owner={owner} />
+            {taskArtifacts.length > 0 ? (
+              <div style={{ display: 'grid', gap: 6 }}>
+                {taskArtifacts.map((artifact) => (
+                  <ExpandableArtifact key={`${artifact.id}-${artifact.version}`} artifact={artifact} owner={owner} />
+                ))}
+              </div>
             ) : (
               <div style={{ fontSize: 12, color: 'var(--text-faint)', fontStyle: 'italic' }}>No output captured.</div>
             )}
@@ -725,8 +753,21 @@ function AgentChainCard({ plan, records, artifacts, agents, dispatchStatus, disp
   );
 }
 
+// +N/−N line-change badge for one artifact version — who touched a file is only
+// half the audit trail; this is the "how much" half.
+function ChangeBadge({ change }) {
+  if (!change || (!change.added && !change.removed)) return null;
+  return (
+    <span className="mono tnum" style={{ display: 'inline-flex', gap: 5, fontSize: 10.5, fontWeight: 700, flexShrink: 0 }}>
+      {change.added > 0 && <span style={{ color: 'var(--ok)' }}>+{change.added}</span>}
+      {change.removed > 0 && <span style={{ color: 'var(--bad)' }}>−{change.removed}</span>}
+    </span>
+  );
+}
+
 // One agent's deliverable, click to expand and read what they actually produced
-// — turns the result list from a black box into reviewable output.
+// — turns the result list from a black box into reviewable output. The header
+// is the attribution row: avatar + file path + version + line delta + @owner.
 function ExpandableArtifact({ artifact, owner }) {
   const [open, setOpen] = useState(false);
   const content = artifact.preview || '';
@@ -735,7 +776,7 @@ function ExpandableArtifact({ artifact, owner }) {
     <div style={{ borderRadius: 'var(--r-sm)', background: tint(owner.color, 7),
       border: `1px solid ${alpha(owner.color, 22)}`, overflow: 'hidden' }}>
       <button onClick={() => setOpen((v) => !v)} style={{ width: '100%', display: 'grid',
-        gridTemplateColumns: 'auto auto auto 1fr auto', gap: 9, alignItems: 'center', padding: '8px 10px',
+        gridTemplateColumns: 'auto auto auto 1fr auto auto auto', gap: 9, alignItems: 'center', padding: '8px 10px',
         background: 'transparent', border: 'none', cursor: 'pointer', font: 'inherit', textAlign: 'left' }}>
         <Icon name={open ? 'chevdown' : 'chevron'} size={12} style={{ color: owner.color }} />
         <Avatar agent={owner} size={20} ring={false} />
@@ -743,6 +784,11 @@ function ExpandableArtifact({ artifact, owner }) {
           style={{ color: owner.color }} />
         <span className="mono" style={{ fontSize: 12, color: 'var(--text)', overflow: 'hidden',
           textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{artifact.title}</span>
+        {artifact.version > 1 && (
+          <span className="mono tnum" style={{ fontSize: 10.5, fontWeight: 600, padding: '1px 6px', borderRadius: 5,
+            background: 'var(--surface-3)', color: 'var(--text-muted)', flexShrink: 0 }}>v{artifact.version}</span>
+        )}
+        <ChangeBadge change={artifact.change} />
         <span style={{ fontSize: 11, color: owner.color, fontWeight: 700 }}>@{owner.role || artifact.ownerAgentId}</span>
       </button>
       {open && (

@@ -418,6 +418,7 @@ export async function dispatchTurn(input: DispatchInput): Promise<DispatchRespon
     error: record.error,
     ...(record.producedFor !== undefined ? { producedFor: record.producedFor } : {}),
     ...(record.fixRound !== undefined ? { fixRound: record.fixRound } : {}),
+    artifactIds: (allArtifactsByTask.get(record.taskId) ?? []).map((artifact) => artifact.id),
   }));
 
   // Fold every task's artifacts together with replace-by-identity semantics:

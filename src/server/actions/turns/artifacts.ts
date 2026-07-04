@@ -1,6 +1,7 @@
 import { nowIso } from '../../store.js';
 import type { Artifact, DispatchRecord, Intake, LocalTurn, Plan, PlanTask, WorkingStyleSnapshot } from '../../types.js';
 import { emptyWorkingStyle } from '../skill-actions.js';
+import { lineChangeStats } from './diff-stats.js';
 import { unresolvedFailureRecords } from './fix-loop.js';
 import { formatWorkingStyleForPrompt } from './planning.js';
 import type { ChangedWorkspaceFile } from './workspace-scan.js';
@@ -106,6 +107,7 @@ export function artifactsFromRun(
     preview: file.text,
     code: file.kind === 'code' ? file.text : null,
     createdAt: nowIso(),
+    change: lineChangeStats('', file.text),
   }));
   const previews = fileArtifacts.filter((artifact) => artifact.kind === 'preview');
   const primary = previews.find((artifact) => /(^|\/)index\.html?$/i.test(artifact.title))
@@ -207,6 +209,9 @@ export function reviewerSummaryArtifact(
 // existing id/chatId REPLACES it, bumping the version only when the content
 // actually changed. This is what keeps a multi-turn chat at one plan, one
 // report, one artifact per file — versioned — instead of an ever-growing list.
+// A bump also records line-change stats against the replaced version and makes
+// the incoming ownerAgentId the last editor, so the UI can answer "who changed
+// what, and by how much" per file.
 export function upsertArtifacts(target: Artifact[], artifacts: Artifact[]): void {
   for (const artifact of artifacts) {
     const index = target.findIndex((item) => item.id === artifact.id && item.chatId === artifact.chatId);
@@ -220,6 +225,9 @@ export function upsertArtifacts(target: Artifact[], artifacts: Artifact[]): void
     target[index] = {
       ...artifact,
       version: changed ? existing.version + 1 : existing.version,
+      change: changed
+        ? lineChangeStats(existing.code ?? existing.preview ?? '', artifact.code ?? artifact.preview ?? '')
+        : existing.change ?? null,
     };
   }
 }
