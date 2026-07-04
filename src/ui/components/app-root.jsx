@@ -13,6 +13,7 @@ import { RoundtableScene, WhiteboardZoom, sceneAt } from './roundtable';
 import { WorkflowView } from './workflow';
 import { Modal, NewTaskModal, NewWorkbenchModal, AddAgentModal } from './modals';
 import { TopBar, recommendWorkflow, Dock } from './stage-scene';
+import { LiveTranscriptFeed } from './live-turn';
 import { Drawer, InspectorPanel } from './inspector';
 import { latestLiveTurn, buildLocalScene } from '../lib/live-scene';
 import { withBundledPreview } from '../lib/preview-html';
@@ -318,7 +319,17 @@ function agentWorkFor(agentId, turnResult) {
     || [...ownedTaskIds].some((taskId) => art.id.startsWith(`${taskId}_`)),
   );
   return {
-    tasks: tasks.map((task) => ({ ...task, status: records.get(task.id)?.status || 'pending' })),
+    // Dispatch records are the final per-task truth but only land at end of
+    // run; while the agent works, liveActivity carries status + the streaming
+    // runtime transcript, so the Work tab can show the process, not a title.
+    tasks: tasks.map((task) => {
+      const activity = turnResult.liveActivity?.[task.id] || null;
+      return {
+        ...task,
+        activity,
+        status: records.get(task.id)?.status || activity?.status || 'pending',
+      };
+    }),
     artifacts,
     adapter: turnResult.dispatchAdapter || null,
   };
@@ -329,6 +340,7 @@ const DM_WORK_STATUS = {
   failed: { label: 'failed', color: 'var(--bad)' },
   blocked: { label: 'blocked', color: 'var(--warn)' },
   running: { label: 'working', color: 'var(--run)' },
+  stopped: { label: 'stopped', color: 'var(--text-faint)' },
   pending: { label: 'queued', color: 'var(--text-faint)' },
 };
 
@@ -356,10 +368,18 @@ function DMWorkPanel({ agent, work }) {
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text)' }}>{task.title}</div>
                   <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginTop: 5 }}>
-                    {adapter && <MetaChip label={`via ${adapter}`} />}
+                    {/* The live feed header below already names the runtime. */}
+                    {!task.activity && adapter && <MetaChip label={`via ${adapter}`} />}
                     {(task.deps || []).map((dep) => <MetaChip key={dep} label={`input ${dep}`} />)}
                   </div>
-                  {task.brief && <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 2 }}>{task.brief}</div>}
+                  {/* Once the runtime is streaming, the live transcript IS the
+                      story of this task — the static brief only matters before
+                      there is anything real to show. */}
+                  {task.activity
+                    ? <div style={{ marginTop: 7 }}>
+                        <LiveTranscriptFeed activity={task.activity} agents={{ [agent.id]: agent, orchestrator: agent }} compact />
+                      </div>
+                    : task.brief && <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 2 }}>{task.brief}</div>}
                 </div>
                 <span style={{ fontSize: 10.5, fontWeight: 700, color: st.color }}>{st.label}</span>
               </div>

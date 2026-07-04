@@ -1053,6 +1053,7 @@ function LocalPlanCard({ plan, intake, agents, approvalStatus, approving, approv
 
 export {
   UserMsg,
+  LiveTranscriptFeed,
   LocalLiveThread,
   LocalLiveTurn,
   ClarifyCard,
