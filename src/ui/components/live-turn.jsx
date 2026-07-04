@@ -317,12 +317,13 @@ function previewArtifactFor(artifacts, agents) {
   candidates.sort((a, b) => b.score - a.score || a.index - b.index);
   const best = candidates[0];
   if (!best) return null;
-  return withBundledPreview({
-    ...withBundledPreview(best.artifact, artifacts),
-    kind: 'preview',
-    title: `Preview · ${best.artifact.title}`,
-    preview: best.html,
-  }, artifacts);
+  // Bundle BEFORE renaming: the bundler resolves relative css/js refs against
+  // the artifact title, so the "Preview · " prefix would break path resolution.
+  const bundled = withBundledPreview(
+    { ...best.artifact, kind: 'preview', preview: best.html, code: null },
+    artifacts,
+  );
+  return { ...bundled, title: `Preview · ${best.artifact.title}` };
 }
 
 function extractHtmlDocument(raw) {
@@ -516,7 +517,17 @@ function LocalInterruptedCard({ turn, agents, artifacts, onResume, onDiscard, on
     if (agents[target]) return agents[target];
     return Object.values(agents).find((a) => a.role === target && !a.pm) || agents.orchestrator;
   };
-  const ranTasks = records.map((record) => {
+  // Interrupted runs die before DispatchRecords are folded into the turn, but
+  // per-task status still lands in workflowRun.stageStates as each agent runs —
+  // fall back to it so the summary doesn't claim "0 tasks ran" after real work.
+  const stageStates = turn.result?.workflowRun?.stageStates || {};
+  const stageToRecordStatus = { done: 'completed', failed: 'failed', running: 'running' };
+  const ranSource = records.length > 0
+    ? records
+    : Object.entries(stageStates)
+        .filter(([, state]) => stageToRecordStatus[state?.status])
+        .map(([taskId, state]) => ({ taskId, status: stageToRecordStatus[state.status] }));
+  const ranTasks = ranSource.map((record) => {
     const task = taskById.get(record.taskId);
     return {
       taskId: record.taskId,
@@ -525,7 +536,7 @@ function LocalInterruptedCard({ turn, agents, artifacts, onResume, onDiscard, on
       status: record.status,
     };
   });
-  const notStarted = (plan?.tasks || []).filter((task) => !records.some((r) => r.taskId === task.id));
+  const notStarted = (plan?.tasks || []).filter((task) => !ranSource.some((r) => r.taskId === task.id));
   const quickAction = (label, icon, onClick, primary) => onClick && (
     <button onClick={onClick} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 11px',
       borderRadius: 'var(--r-sm)', border: primary ? 'none' : '1px solid var(--border)', cursor: 'pointer',

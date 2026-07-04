@@ -1258,7 +1258,7 @@ function App() {
                 {notesOpen && <InspectorPanel tab={inspectorTab} setTab={setInspectorTab} clock={scene.clock} width={compact ? 'min(100vw, 420px)' : inspectorW}
                   agents={agents} scene={scene} authed={authed} live={authed && !!activeChatId} liveArtifacts={liveArtifacts} liveMessages={liveMessages}
                   liveHandoffs={liveHandoffs} activeChatId={activeChatId}
-                  localTurns={activeLocalTurns.length ? activeLocalTurns : localTurns} localStatus={localStatus} onApproveLocalTurn={approveLocalTurn}
+                  localTurns={activeLocalTurns.length ? activeLocalTurns : localTurns} allLocalTurns={localTurns} localStatus={localStatus} onApproveLocalTurn={approveLocalTurn}
                   localTurnActions={{ interrupt: interruptLocalTurn, redispatch: redispatchLocalTurn, discard: discardLocalTurn, clarify: answerLocalClarification, approve: approveLocalTurn, delivery: decideLocalDelivery }}
                   onOpenArtifact={setDrawerArt} onAction={onAction} onClose={() => setNotesOpen(false)}
                   onRewrite={sendComposerMessage} />}

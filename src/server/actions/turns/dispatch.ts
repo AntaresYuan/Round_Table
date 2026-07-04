@@ -322,14 +322,24 @@ export async function dispatchTurn(input: DispatchInput): Promise<DispatchRespon
   const schedulerToStage = { running: 'running', completed: 'done', failed: 'failed', blocked: 'blocked' } as const;
   const onTaskState = async (taskId: string, status: 'running' | 'completed' | 'failed' | 'blocked') => {
     const derived = derivedById.get(taskId);
+    // Persist this task's artifacts as soon as it reaches a terminal state — not
+    // only at the end-of-run fold. An interrupted or crashed run must not lose
+    // the work of tasks that already finished (their files exist in the
+    // workspace but would otherwise never be registered).
+    const taskArtifacts = status === 'completed' || status === 'failed'
+      ? allArtifactsByTask.get(taskId) ?? []
+      : [];
     await updateTurn(turn.id, (current) => {
       const planHasTask = current.plan.tasks.some((task) => task.id === taskId);
       const tasks = derived && !planHasTask
         ? [...current.plan.tasks, derived]
         : current.plan.tasks;
+      const artifacts = [...current.artifacts];
+      upsertArtifacts(artifacts, taskArtifacts);
       return {
         ...current,
         plan: { ...current.plan, tasks },
+        artifacts,
         dispatchStage: status === 'running' ? `running:${taskId}` : current.dispatchStage,
         workflowRun: {
           ...(current.workflowRun ?? { activeStageId: null, stageStates: {}, taskStates: {} }),
@@ -347,6 +357,11 @@ export async function dispatchTurn(input: DispatchInput): Promise<DispatchRespon
         },
       };
     }, input);
+    if (taskArtifacts.length > 0 && turn.localChatId) {
+      await mutateData((data) => {
+        upsertArtifacts(data.artifacts, taskArtifacts);
+      });
+    }
     const current = await getTurn(turn.id, input);
     if (current) {
       const mission = await updateMissionForDispatch(current);

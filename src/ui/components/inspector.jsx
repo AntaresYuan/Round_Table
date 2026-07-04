@@ -187,10 +187,14 @@ function FileRow({ art, agents, onOpen, activeChatId }) {
     </button>
   );
 }
-function InspectorPanel({ tab, setTab, clock, agents, scene, width, onOpenArtifact, onAction, onClose, authed, live, liveArtifacts, liveMessages, liveHandoffs, activeChatId, localTurns, localStatus, onApproveLocalTurn, localTurnActions, onRewrite }) {
+function InspectorPanel({ tab, setTab, clock, agents, scene, width, onOpenArtifact, onAction, onClose, authed, live, liveArtifacts, liveMessages, liveHandoffs, activeChatId, localTurns, allLocalTurns, localStatus, onApproveLocalTurn, localTurnActions, onRewrite }) {
   const placed = sceneAt(clock).placed;
   const hasLocalTurns = localTurns && localTurns.length > 0;
-  const localArtifacts = hasLocalTurns ? liveArtifactsFromTurns(localTurns, agents, localStatus) : [];
+  // Files aggregate across the WHOLE chat (allLocalTurns), not just the active
+  // turn — a follow-up message must not "reset" the file list to its own
+  // intake/plan snapshot while the previous turn's deliverables still exist.
+  const artifactTurns = (allLocalTurns && allLocalTurns.length > 0) ? allLocalTurns : localTurns;
+  const localArtifacts = hasLocalTurns ? liveArtifactsFromTurns(artifactTurns, agents, localStatus) : [];
   // P3.2: in live mode show the real chat's artifacts (empty until the orchestrator runs) —
   // never fall back to scripted fixtures, which would contradict the live center stage.
   const rawCreated = hasLocalTurns
