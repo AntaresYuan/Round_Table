@@ -114,6 +114,14 @@ describe('custom template storage — override by id', () => {
     await expect(saveWorkflowTemplate(template)).rejects.toThrow(WorkflowTemplateError);
   });
 
+  it('rejects runnable templates with no agent seats instead of falling back silently', async () => {
+    const template = featureBuilder();
+    for (const stage of template.stages) {
+      if (['plan', 'build', 'review'].includes(stage.id)) stage.seats = [];
+    }
+    await expect(saveWorkflowTemplate(template)).rejects.toThrow(/no_runnable_agent_seat/);
+  });
+
   it('rejects seats that point at unknown agents', async () => {
     const template = featureBuilder();
     template.stages[2]!.seats = [{ ref: { kind: 'role', role: 'implementer', agentId: 'ghost' } }];

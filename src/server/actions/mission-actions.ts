@@ -381,6 +381,9 @@ export async function saveWorkflowTemplate(template: WorkflowTemplate): Promise<
   if (!template.stages.some((stage) => TASK_STAGE_KINDS.has(stage.kind))) {
     throw new WorkflowTemplateError('no_runnable_stage');
   }
+  if (!template.stages.some(stageCanCreateTask)) {
+    throw new WorkflowTemplateError('no_runnable_agent_seat');
+  }
   const stored: WorkflowTemplate = {
     ...cloneTemplate(template),
     id: idValue,
@@ -400,6 +403,18 @@ export async function saveWorkflowTemplate(template: WorkflowTemplate): Promise<
     };
   });
   return stored;
+}
+
+function stageCanCreateTask(stage: WorkflowStage): boolean {
+  if (!TASK_STAGE_KINDS.has(stage.kind)) return false;
+  return (stage.seats ?? []).some((seatItem) => {
+    const ref = seatItem.ref;
+    if (ref.kind !== 'role') return false;
+    if (ref.agentId) {
+      return AGENT_ROSTER.some((agent) => agent.id === ref.agentId);
+    }
+    return AGENT_ROSTER.some((agent) => agent.role === ref.role);
+  });
 }
 
 // Deleting a custom template removes the override/custom entry; a builtin id
