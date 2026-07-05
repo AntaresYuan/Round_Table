@@ -769,14 +769,14 @@ function Door({ active, onClick }) {
 }
 
 /* ---- Scene root ---------------------------------------------------------- */
-function RoundtableScene({ agents, scene, memberIds, onOpenArtifact, onAction, onOpenBreakouts, onSeatClick, onOpenFiles, onOpenCodeLogs, onZoomWhiteboard, wide, activityByAgent }) {
+function RoundtableScene({ agents, scene, memberIds, onOpenArtifact, onAction, onOpenBreakouts, onSeatClick, onOpenFiles, onOpenCodeLogs, onZoomWhiteboard, wide, activityByAgent, breakoutCount = 0 }) {
   L = wide ? LAYOUTS.wide : LAYOUTS.stacked;     // set active layout for this render
   const seats = buildSeats(memberIds);
   const speaker = scene.speech ? scene.speech.agentId : null;
   return (
     <RoomStage w={L.W} h={L.H}>
       <Whiteboard tasks={scene.tasks} agents={agents} posted={scene.planPosted} onZoom={onZoomWhiteboard} big={wide} live={scene.live} run={scene.run} />
-      <Door active={scene.breakout ? 1 : 0} onClick={onOpenBreakouts} />
+      <Door active={breakoutCount || (scene.breakout ? 1 : 0)} onClick={onOpenBreakouts} />
       <TableBody />
       <Beams scene={scene} agents={agents} seats={seats} />
       <DocTray placed={scene.placed} agents={agents} onOpen={onOpenCodeLogs || onOpenFiles} />

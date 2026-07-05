@@ -35,6 +35,49 @@ export type Message = {
   createdAt: string;
 };
 
+export type BreakoutRoomStatus = 'open' | 'closed';
+
+export type BreakoutRoom = {
+  id: string;
+  ownerId: string;
+  chatId: string;
+  createdBy: string;
+  participantAgentIds: string[];
+  status: BreakoutRoomStatus;
+  createdAt: string;
+  updatedAt: string;
+  closedAt: string | null;
+};
+
+export type BreakoutMessage = {
+  id: string;
+  ownerId: string;
+  roomId: string;
+  authorType: 'user' | 'agent' | 'system';
+  authorId: string;
+  content: string;
+  createdAt: string;
+};
+
+export type BreakoutProposalStatus = 'draft' | 'sent' | 'dismissed';
+
+export type BreakoutHandoffProposal = {
+  id: string;
+  ownerId: string;
+  roomId: string;
+  chatId: string;
+  targetAgentId: string;
+  task: string;
+  constraints: string[];
+  summary: string;
+  why?: string | undefined;
+  relevantMessageIds: string[];
+  status: BreakoutProposalStatus;
+  createdAt: string;
+  updatedAt: string;
+  sentAt: string | null;
+};
+
 export type Artifact = {
   id: string;
   chatId: string;

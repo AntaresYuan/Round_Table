@@ -54,6 +54,14 @@ export async function deleteChat(actor: Actor, chatId: string): Promise<{ id: st
       .filter((path): path is string => Boolean(path));
     data.chats = data.chats.filter((item) => item.id !== chatId);
     data.messages = data.messages.filter((message) => message.chatId !== chatId);
+    const roomIds = new Set(
+      data.breakoutRooms
+        .filter((room) => room.ownerId === actor.id && room.chatId === chatId)
+        .map((room) => room.id),
+    );
+    data.breakoutRooms = data.breakoutRooms.filter((room) => !(room.ownerId === actor.id && room.chatId === chatId));
+    data.breakoutMessages = data.breakoutMessages.filter((message) => !roomIds.has(message.roomId));
+    data.breakoutProposals = data.breakoutProposals.filter((proposal) => !(proposal.ownerId === actor.id && proposal.chatId === chatId));
     data.artifacts = data.artifacts.filter((artifact) => artifact.chatId !== chatId);
     data.handoffs = data.handoffs.filter((handoff) => handoff.chatId !== chatId);
     data.turns = data.turns.filter((turn) => turn.localChatId !== chatId);

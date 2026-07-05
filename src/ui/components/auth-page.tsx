@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { FormEvent, MouseEvent } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
 import { getProviders, signIn } from 'next-auth/react';
 
 type AuthMode = 'signin' | 'signup';
@@ -21,7 +20,6 @@ const agents = [
 ];
 
 export function AuthPage({ mode, callbackUrl = '/' }: AuthPageProps) {
-  const router = useRouter();
   const [email, setEmail] = useState('');
   const [name, setName] = useState('');
   const [workspaceName, setWorkspaceName] = useState('Product Squad');
@@ -38,7 +36,12 @@ export function AuthPage({ mode, callbackUrl = '/' }: AuthPageProps) {
   const hasDev = Boolean(providers?.dev);
 
   useEffect(() => {
-    getProviders().then((items) => setProviders(items as Record<string, { id: string; name: string }> | null));
+    getProviders()
+      .then((items) => setProviders(items as Record<string, { id: string; name: string }> | null))
+      .catch(() => {
+        setProviders({});
+        setError('Could not load sign-in options. Please refresh and try again.');
+      });
   }, []);
 
   const continueWithGoogle = async () => {
@@ -69,7 +72,7 @@ export function AuthPage({ mode, callbackUrl = '/' }: AuthPageProps) {
     if (isSignup) {
       window.localStorage.setItem('roundtable.pendingWorkbenchName', workspaceName.trim() || 'Product Squad');
     }
-    router.push(result?.url || target);
+    window.location.assign(target);
   };
 
   const moveStage = (event: MouseEvent<HTMLElement>) => {

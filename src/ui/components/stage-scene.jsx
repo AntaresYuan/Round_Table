@@ -50,7 +50,7 @@ function Aggregate({ beat, agents, onAction }) {
   );
 }
 
-function Thread({ agents, scene, onOpenArtifact, onAction }) {
+function Thread({ agents, scene, onOpenArtifact, onAction, onOpenBreakout }) {
   const ref = useRef(null);
   const revealed = RT.SCRIPT.filter(b => b.at <= scene.clock);
   const [handoff, setHandoff] = useState(RT.HANDOFF);
@@ -145,7 +145,7 @@ function Thread({ agents, scene, onOpenArtifact, onAction }) {
           if (b.kind === 'agent') return <MessageGroup key={b.id} beat={b} agents={agents} playing={live} onOpenArtifact={onOpenArtifact} noticesByArtifact={noticesByArtifact} onAskSync={askSync} reviewsByArtifact={reviewsByArtifact} onApplyFix={applyReviewFix} />;
           if (b.kind === 'plan') return <TodoListCard key={b.id} plan={plan} agents={agents} />;
           if (b.kind === 'handoff') return <HandoffCard key={b.id} ho={handoff} agents={agents} onEdit={openEditDispatch} />;
-          if (b.kind === 'breakout') return <div key={b.id} className="rt-rise"><BreakoutChip data={b} agents={agents} /></div>;
+          if (b.kind === 'breakout') return <div key={b.id} className="rt-rise"><BreakoutChip data={b} agents={agents} onEnter={onOpenBreakout} /></div>;
           if (b.kind === 'aggregate') return <Aggregate key={b.id} beat={b} agents={agents} onAction={onAction} />;
           return null;
         })}

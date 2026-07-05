@@ -790,12 +790,17 @@ const ghostBtn = {
 };
 
 /* ---- BreakoutChip (a door, not a toggle) --------------------------------- */
-function BreakoutChip({ data, agents }) {
+function BreakoutChip({ data, agents, onEnter }) {
   const [peek, setPeek] = useState(false);
   const a = agents[data.a], b = agents[data.b];
+  const enterRoom = (e) => {
+    e && e.stopPropagation();
+    if (onEnter) onEnter(data.id);
+    else setPeek((p) => !p);
+  };
   return (
     <div style={{ position: 'relative', display: 'inline-block' }}>
-      <button onClick={() => setPeek(p => !p)} className="rt-breakout" style={{
+      <button onClick={enterRoom} className="rt-breakout" style={{
         display: 'inline-flex', alignItems: 'center', gap: 9, padding: '8px 14px 8px 11px',
         borderRadius: 'var(--r-chip)', cursor: 'pointer', font: 'inherit',
         background: 'var(--surface)', color: 'var(--text)',
@@ -844,9 +849,9 @@ function BreakoutChip({ data, agents }) {
           </div>
           <div style={{ padding: '11px 14px', borderTop: '1px solid var(--border)', display: 'flex',
             alignItems: 'center', gap: 10, background: 'var(--surface-2)' }}>
-            <button style={{ ...ghostBtn, background: 'var(--accent)', color: '#fff', border: 'none',
+            <button onClick={enterRoom} style={{ ...ghostBtn, background: 'var(--accent)', color: '#fff', border: 'none',
               fontWeight: 500 }}><Icon name="door" size={14} /> Step into room</button>
-            <span style={{ fontSize: 11.5, color: 'var(--text-faint)' }}>Full room arrives in a later batch</span>
+            <span style={{ fontSize: 11.5, color: 'var(--text-faint)' }}>{onEnter ? 'Open the shared side room' : 'Preview transcript'}</span>
           </div>
         </div>
       )}

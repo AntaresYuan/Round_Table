@@ -187,7 +187,7 @@ function FileRow({ art, agents, onOpen, activeChatId }) {
     </button>
   );
 }
-function InspectorPanel({ tab, setTab, clock, agents, scene, width, onOpenArtifact, onAction, onClose, authed, live, liveArtifacts, liveMessages, liveHandoffs, activeChatId, localTurns, allLocalTurns, localStatus, onApproveLocalTurn, localTurnActions, onRewrite }) {
+function InspectorPanel({ tab, setTab, clock, agents, scene, width, onOpenArtifact, onAction, onClose, authed, live, liveArtifacts, liveMessages, liveHandoffs, activeChatId, localTurns, allLocalTurns, localStatus, onApproveLocalTurn, localTurnActions, onRewrite, onOpenBreakout }) {
   const placed = sceneAt(clock).placed;
   const hasLocalTurns = localTurns && localTurns.length > 0;
   // Files aggregate across the WHOLE chat (allLocalTurns), not just the active
@@ -228,7 +228,7 @@ function InspectorPanel({ tab, setTab, clock, agents, scene, width, onOpenArtifa
             ? <LocalLiveThread turns={localTurns} agents={agents} onApproveTurn={onApproveLocalTurn} turnActions={localTurnActions} />
             : live
             ? <LiveThread messages={liveMessages ?? []} handoffs={liveHandoffs} agents={agents} onRewrite={onRewrite} />
-            : <Thread agents={agents} scene={scene} onOpenArtifact={onOpenArtifact} onAction={onAction} narrow />}
+            : <Thread agents={agents} scene={scene} onOpenArtifact={onOpenArtifact} onAction={onAction} onOpenBreakout={onOpenBreakout} narrow />}
         </div>
       ) : tab === 'files' ? (
         <div style={{ flex: 1, overflowY: 'auto', padding: '14px 14px 24px' }}>
