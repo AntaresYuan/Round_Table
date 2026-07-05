@@ -32,13 +32,21 @@ export function AuthPage({ mode, callbackUrl = '/' }: AuthPageProps) {
   const isSignup = mode === 'signup';
   const target = useMemo(() => {
     if (!callbackUrl || callbackUrl.startsWith('/api/auth')) return '/';
+    // Only allow same-origin relative paths so callbackUrl can't drive an
+    // open redirect to an external site after sign-in.
+    if (!callbackUrl.startsWith('/') || callbackUrl.startsWith('//')) return '/';
     return callbackUrl;
   }, [callbackUrl]);
   const hasGoogle = Boolean(providers?.google);
   const hasDev = Boolean(providers?.dev);
 
   useEffect(() => {
-    getProviders().then((items) => setProviders(items as Record<string, { id: string; name: string }> | null));
+    getProviders()
+      .then((items) => setProviders(items as Record<string, { id: string; name: string }> | null))
+      .catch(() => {
+        setProviders({});
+        setError('Could not load sign-in options. Please refresh and try again.');
+      });
   }, []);
 
   const continueWithGoogle = async () => {
