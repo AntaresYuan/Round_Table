@@ -197,10 +197,17 @@ function restoreCustomAgents() {
 
 
 /* ---- Breakout room (a real side room you can sit in) --------------------- */
-function BreakoutModal({ data, agents, onClose, onBringBack }) {
+function BreakoutModal({ data, agents, onClose, onBringBack, onSend, sending }) {
   if (!data) return null;
   const [val, setVal] = useState('');
   const a = agents[data.a], b = agents[data.b];
+  const canSend = typeof onSend === 'function';
+  const submit = () => {
+    const text = val.trim();
+    if (!text) return;
+    if (canSend) onSend(text);
+    setVal('');
+  };
   return (
     <div onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 115, background: alpha('#000', 38),
       backdropFilter: 'blur(3px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
@@ -223,30 +230,51 @@ function BreakoutModal({ data, agents, onClose, onBringBack }) {
         </div>
         <div style={{ flex: 1, overflowY: 'auto', padding: '16px', display: 'flex', flexDirection: 'column', gap: 14, background: 'var(--bg)' }}>
           {data.transcript.map((t, i) => {
+            if (t.isUser) {
+              return (
+                <div key={i} style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                  <div style={{ maxWidth: '80%', background: 'var(--accent)', color: '#fff', borderRadius: '12px 4px 12px 12px',
+                    padding: '9px 12px', fontSize: 13.5, lineHeight: 1.5 }}>{t.text}</div>
+                </div>
+              );
+            }
             const ag = agents[t.agentId];
             return (
               <div key={i} style={{ display: 'flex', gap: 10 }}>
                 <Avatar agent={ag} size={28} />
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 12, color: ag.color, fontWeight: 600, marginBottom: 2 }}>{ag.displayName}</div>
+                  <div style={{ fontSize: 12, color: ag?.color, fontWeight: 600, marginBottom: 2 }}>{ag?.displayName || t.agentId}</div>
                   <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '4px 12px 12px 12px',
                     padding: '9px 12px', fontSize: 13.5, color: 'var(--text)', lineHeight: 1.5 }}>{t.text}</div>
                 </div>
               </div>
             );
           })}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, alignSelf: 'center', fontSize: 11.5, color: 'var(--text-faint)',
-            padding: '4px 12px', borderRadius: 999, background: 'var(--surface-2)' }}>
-            <Icon name="check" size={12} style={{ color: 'var(--ok)' }} /> aligned — outcome ready to share
-          </div>
+          {sending && (
+            <div style={{ display: 'flex', gap: 10 }}>
+              <Avatar agent={a} size={28} />
+              <div style={{ flex: 1 }}>
+                <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '4px 12px 12px 12px',
+                  padding: '9px 12px', fontSize: 13.5, color: 'var(--text-faint)', lineHeight: 1.5, fontStyle: 'italic' }}>thinking…</div>
+              </div>
+            </div>
+          )}
+          {!sending && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, alignSelf: 'center', fontSize: 11.5, color: 'var(--text-faint)',
+              padding: '4px 12px', borderRadius: 999, background: 'var(--surface-2)' }}>
+              <Icon name="check" size={12} style={{ color: 'var(--ok)' }} /> aligned — outcome ready to share
+            </div>
+          )}
         </div>
         <div style={{ padding: '11px 14px', borderTop: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 10 }}>
           <div style={{ display: 'flex', alignItems: 'flex-end', gap: 9 }}>
             <textarea value={val} onChange={(e) => setVal(e.target.value)} rows={1} placeholder="Join in — add a note to the room…"
+              onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); } }}
               style={{ flex: 1, resize: 'none', border: '1px solid var(--border)', borderRadius: 'var(--r-sm)', background: 'var(--surface-2)',
                 font: 'inherit', fontSize: 13.5, color: 'var(--text)', padding: '9px 11px', outline: 'none', maxHeight: 90 }} />
-            <button onClick={() => setVal('')} style={{ display: 'grid', placeItems: 'center', width: 38, height: 38, borderRadius: 'var(--r-sm)',
-              border: 'none', cursor: 'pointer', background: 'var(--surface-3)', color: 'var(--text-muted)', flexShrink: 0 }}><Icon name="send" size={16} /></button>
+            <button onClick={submit} disabled={!val.trim() || sending} style={{ display: 'grid', placeItems: 'center', width: 38, height: 38, borderRadius: 'var(--r-sm)',
+              border: 'none', cursor: (!val.trim() || sending) ? 'default' : 'pointer', background: 'var(--surface-3)',
+              color: 'var(--text-muted)', flexShrink: 0, opacity: (!val.trim() || sending) ? 0.5 : 1 }}><Icon name="send" size={16} /></button>
           </div>
           <button onClick={() => { onBringBack && onBringBack(); onClose(); }} style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
             gap: 7, padding: '10px', borderRadius: 'var(--r-sm)', border: 'none', cursor: 'pointer', background: 'var(--accent)', color: '#fff',
@@ -733,6 +761,14 @@ function App() {
   );
   const liveMessages = authed && messagesQ.data ? messagesQ.data : null;
   const liveHandoffs = authed && handoffsQ.data ? handoffsQ.data : null;
+  const breakoutRoomsQ = trpc.breakouts.listRooms.useQuery(
+    { chatId: activeChatId ?? '' },
+    { enabled: authed && !!activeChatId },
+  );
+  const liveBreakoutRooms = authed && breakoutRoomsQ.data ? breakoutRoomsQ.data : null;
+  const postBreakoutMessage = trpc.breakouts.postMessage.useMutation({
+    onSettled: () => { if (activeChatId) trpcUtils.breakouts.listRooms.invalidate({ chatId: activeChatId }); },
+  });
   const agents = useMemo(() => palettize(t.palette), [t.palette, memberIds]);
   const railWorkbench = authed && activeWorkbench
     ? { ...activeWorkbench, members: RT.WORKBENCH.members }
@@ -1173,7 +1209,27 @@ function App() {
     }
     handleSignIn();
   };
-  const breakoutData = RT.SCRIPT.find((b) => b.kind === 'breakout');
+  const demoBreakoutData = RT.SCRIPT.find((b) => b.kind === 'breakout');
+  // When authed with a live room, drive the modal from the server bundle;
+  // otherwise fall back to the scripted demo room (marketing / logged-out view).
+  const liveBreakoutRoom = liveBreakoutRooms && liveBreakoutRooms.length ? liveBreakoutRooms[0] : null;
+  const breakoutData = liveBreakoutRoom
+    ? {
+        id: liveBreakoutRoom.id,
+        a: liveBreakoutRoom.participantAgentIds[0],
+        b: liveBreakoutRoom.participantAgentIds[1],
+        turns: liveBreakoutRoom.messages.length,
+        transcript: liveBreakoutRoom.messages.map((m) => ({
+          agentId: m.authorId,
+          isUser: m.authorType === 'user',
+          text: m.content,
+        })),
+      }
+    : demoBreakoutData;
+  const sendBreakoutNote = (text) => {
+    if (!liveBreakoutRoom) return;
+    postBreakoutMessage.mutate({ roomId: liveBreakoutRoom.id, content: text });
+  };
 
   return (
     <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -1311,8 +1367,9 @@ function App() {
       {drawerArt && <Drawer art={drawerArt} agents={agents} onClose={() => setDrawerArt(null)} />}
       {zoomWB && <WhiteboardZoom tasks={st.tasks} agents={agents} live={st.live} run={st.run} posted={st.planPosted} onClose={() => setZoomWB(false)} />}
       {breakoutOpen && <BreakoutModal data={breakoutData} agents={agents} onClose={() => setBreakoutOpen(false)}
-        onBringBack={() => { setInspectorTab('notes'); setNotesOpen(true); }} />}
-      {hubOpen && <BreakoutsHub agents={agents} memberIds={memberIds} autoRoom={st.breakout ? breakoutData : null}
+        onBringBack={() => { setInspectorTab('notes'); setNotesOpen(true); }}
+        onSend={liveBreakoutRoom ? sendBreakoutNote : undefined} sending={postBreakoutMessage.isPending} />}
+      {hubOpen && <BreakoutsHub agents={agents} memberIds={memberIds} autoRoom={st.breakout ? demoBreakoutData : null}
         onEnterAuto={() => { setHubOpen(false); setBreakoutOpen(true); }}
         onStartDM={(id) => { setHubOpen(false); setDmAgent(id); }} onClose={() => setHubOpen(false)} />}
       {dmAgent && <DMRoom agent={agents[dmAgent]}

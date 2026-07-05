@@ -1,6 +1,11 @@
 import { z } from 'zod';
 import { polishText, suggestTasks } from './actions/ai-actions.js';
 import {
+  createBreakoutRoom,
+  listBreakoutRooms,
+  postBreakoutMessage,
+} from './actions/breakout-actions.js';
+import {
   createChat,
   createMessage,
   deleteChat,
@@ -56,6 +61,22 @@ const messagesRouter = createTRPCRouter({
   create: protectedProcedure
     .input(z.object({ chatId: z.string().min(1), content: z.string().min(1) }))
     .mutation(({ ctx, input }) => createMessage(ctx.user, input)),
+});
+
+const breakoutsRouter = createTRPCRouter({
+  listRooms: protectedProcedure.input(chatIdInput).query(({ ctx, input }) => listBreakoutRooms(ctx.user, input.chatId)),
+  createRoom: protectedProcedure
+    .input(z.object({
+      chatId: z.string().min(1),
+      participantAgentIds: z.array(z.string().min(1)).length(2),
+    }))
+    .mutation(({ ctx, input }) => createBreakoutRoom(ctx.user, input)),
+  postMessage: protectedProcedure
+    .input(z.object({
+      roomId: z.string().min(1),
+      content: z.string().min(1),
+    }))
+    .mutation(({ ctx, input }) => postBreakoutMessage(ctx.user, input)),
 });
 
 const artifactsRouter = createTRPCRouter({
@@ -174,6 +195,7 @@ const aiRouter = createTRPCRouter({
 export const appRouter = createTRPCRouter({
   ai: aiRouter,
   artifacts: artifactsRouter,
+  breakouts: breakoutsRouter,
   chats: chatsRouter,
   handoffs: handoffsRouter,
   messages: messagesRouter,

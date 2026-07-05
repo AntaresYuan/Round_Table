@@ -8,6 +8,8 @@ import type {
   AgentRuntimeConfig,
   AgentRuntimeConversation,
   AgentRuntimeDefaultConfig,
+  BreakoutMessage,
+  BreakoutRoom,
   Chat,
   Handoff,
   LocalTurn,
@@ -25,6 +27,8 @@ export type RoundtableData = {
   workbenches: Workbench[];
   chats: Chat[];
   messages: Message[];
+  breakoutRooms: BreakoutRoom[];
+  breakoutMessages: BreakoutMessage[];
   artifacts: Artifact[];
   handoffs: Handoff[];
   profiles: UserProfile[];
@@ -336,6 +340,30 @@ const NORMALIZED_TABLE_STATEMENTS = [
     updated_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (store_key, id)
   )`,
+  `CREATE TABLE IF NOT EXISTS roundtable_breakout_rooms (
+    store_key text NOT NULL,
+    id text NOT NULL,
+    owner_id text NOT NULL,
+    chat_id text NOT NULL,
+    status text NOT NULL,
+    created_at timestamptz NOT NULL,
+    record_updated_at timestamptz NOT NULL,
+    data jsonb NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (store_key, id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS roundtable_breakout_messages (
+    store_key text NOT NULL,
+    id text NOT NULL,
+    owner_id text NOT NULL,
+    room_id text NOT NULL,
+    author_type text NOT NULL,
+    author_id text NOT NULL,
+    created_at timestamptz NOT NULL,
+    data jsonb NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (store_key, id)
+  )`,
   `CREATE TABLE IF NOT EXISTS roundtable_artifacts (
     store_key text NOT NULL,
     id text NOT NULL,
@@ -463,6 +491,8 @@ const NORMALIZED_INDEX_STATEMENTS = [
   'CREATE INDEX IF NOT EXISTS roundtable_workbenches_owner_idx ON roundtable_workbenches (store_key, owner_id)',
   'CREATE INDEX IF NOT EXISTS roundtable_chats_owner_workbench_idx ON roundtable_chats (store_key, owner_id, workbench_id)',
   'CREATE INDEX IF NOT EXISTS roundtable_messages_chat_created_idx ON roundtable_messages (store_key, chat_id, created_at)',
+  'CREATE INDEX IF NOT EXISTS roundtable_breakout_rooms_chat_updated_idx ON roundtable_breakout_rooms (store_key, chat_id, record_updated_at)',
+  'CREATE INDEX IF NOT EXISTS roundtable_breakout_messages_room_created_idx ON roundtable_breakout_messages (store_key, room_id, created_at)',
   'CREATE INDEX IF NOT EXISTS roundtable_artifacts_chat_created_idx ON roundtable_artifacts (store_key, chat_id, created_at)',
   'CREATE INDEX IF NOT EXISTS roundtable_handoffs_chat_created_idx ON roundtable_handoffs (store_key, chat_id, created_at)',
   'CREATE INDEX IF NOT EXISTS roundtable_user_skills_user_idx ON roundtable_user_skills (store_key, user_id, enabled)',
@@ -480,6 +510,8 @@ const NORMALIZED_CONSTRAINT_STATEMENTS = [
   normalizedConstraint('roundtable_chats_owner_fk', 'roundtable_chats', '(store_key, owner_id)', 'roundtable_users', '(store_key, id)'),
   normalizedConstraint('roundtable_chats_workbench_fk', 'roundtable_chats', '(store_key, workbench_id)', 'roundtable_workbenches', '(store_key, id)'),
   normalizedConstraint('roundtable_messages_chat_fk', 'roundtable_messages', '(store_key, chat_id)', 'roundtable_chats', '(store_key, id)'),
+  normalizedConstraint('roundtable_breakout_rooms_chat_fk', 'roundtable_breakout_rooms', '(store_key, chat_id)', 'roundtable_chats', '(store_key, id)'),
+  normalizedConstraint('roundtable_breakout_messages_room_fk', 'roundtable_breakout_messages', '(store_key, room_id)', 'roundtable_breakout_rooms', '(store_key, id)'),
   normalizedConstraint('roundtable_handoffs_chat_fk', 'roundtable_handoffs', '(store_key, chat_id)', 'roundtable_chats', '(store_key, id)'),
   normalizedConstraint('roundtable_profiles_user_fk', 'roundtable_profiles', '(store_key, user_id)', 'roundtable_users', '(store_key, id)'),
   normalizedConstraint('roundtable_user_skills_user_fk', 'roundtable_user_skills', '(store_key, user_id)', 'roundtable_users', '(store_key, id)'),
@@ -550,6 +582,40 @@ const NORMALIZED_TABLE_SPECS = [
     columns: [
       { name: 'owner_id', value: (row) => row.ownerId },
       { name: 'chat_id', value: (row) => row.chatId },
+      { name: 'author_type', value: (row) => row.authorType },
+      { name: 'author_id', value: (row) => row.authorId },
+      { name: 'created_at', value: (row) => row.createdAt },
+    ],
+  }),
+  makeTableSpec<BreakoutRoom>({
+    table: 'roundtable_breakout_rooms',
+    idColumn: 'id',
+    rows: (data) => data.breakoutRooms,
+    assign: (data, rows) => {
+      data.breakoutRooms = rows;
+    },
+    id: (row) => row.id,
+    orderBy: 'created_at ASC, id ASC',
+    columns: [
+      { name: 'owner_id', value: (row) => row.ownerId },
+      { name: 'chat_id', value: (row) => row.chatId },
+      { name: 'status', value: (row) => row.status },
+      { name: 'created_at', value: (row) => row.createdAt },
+      { name: 'record_updated_at', value: (row) => row.updatedAt },
+    ],
+  }),
+  makeTableSpec<BreakoutMessage>({
+    table: 'roundtable_breakout_messages',
+    idColumn: 'id',
+    rows: (data) => data.breakoutMessages,
+    assign: (data, rows) => {
+      data.breakoutMessages = rows;
+    },
+    id: (row) => row.id,
+    orderBy: 'created_at ASC, id ASC',
+    columns: [
+      { name: 'owner_id', value: (row) => row.ownerId },
+      { name: 'room_id', value: (row) => row.roomId },
       { name: 'author_type', value: (row) => row.authorType },
       { name: 'author_id', value: (row) => row.authorId },
       { name: 'created_at', value: (row) => row.createdAt },
@@ -860,6 +926,8 @@ function emptyData(): RoundtableData {
     workbenches: [],
     chats: [],
     messages: [],
+    breakoutRooms: [],
+    breakoutMessages: [],
     artifacts: [],
     handoffs: [],
     profiles: [],
@@ -880,6 +948,8 @@ function normalizeData(raw: Partial<RoundtableData>): RoundtableData {
     workbenches: Array.isArray(raw.workbenches) ? raw.workbenches : [],
     chats: Array.isArray(raw.chats) ? raw.chats : [],
     messages: Array.isArray(raw.messages) ? raw.messages : [],
+    breakoutRooms: Array.isArray(raw.breakoutRooms) ? raw.breakoutRooms : [],
+    breakoutMessages: Array.isArray(raw.breakoutMessages) ? raw.breakoutMessages : [],
     artifacts: Array.isArray(raw.artifacts) ? raw.artifacts : [],
     handoffs: Array.isArray(raw.handoffs) ? raw.handoffs : [],
     profiles: Array.isArray(raw.profiles) ? raw.profiles : [],
