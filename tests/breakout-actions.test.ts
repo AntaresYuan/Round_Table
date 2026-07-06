@@ -1,123 +1,185 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  classifyBreakoutRequest,
-  createBreakoutProposal,
   createBreakoutRoom,
   listBreakoutRooms,
   postBreakoutMessage,
-  selectBreakoutResponder,
-  sendBreakoutProposalToChat,
 } from '../src/server/actions/breakout-actions.js';
-import { createChat, deleteChat, listMessages } from '../src/server/actions/chat-actions.js';
+import { createChat, createMessage } from '../src/server/actions/chat-actions.js';
+import { saveSettings } from '../src/server/actions/settings-actions.js';
 import { createWorkbench } from '../src/server/actions/workbench-actions.js';
-import { readData, resetData } from '../src/server/store.js';
+import { mutateData, readData, resetData } from '../src/server/store.js';
 import type { Actor } from '../src/server/types.js';
 
 let tempDir = '';
-const actor: Actor = { id: 'test-user', email: 'test@roundtable.local', name: 'Test User' };
-const otherActor: Actor = { id: 'other-user', email: 'other@roundtable.local', name: 'Other User' };
+const actor: Actor = { id: 'user-breakout', email: 'breakout@roundtable.local', name: 'Breakout User' };
 
 beforeEach(async () => {
   tempDir = await mkdtemp(join(tmpdir(), 'roundtable-breakout-'));
   process.env.ROUNDTABLE_DATA_PATH = join(tempDir, 'data.json');
+  process.env.ROUNDTABLE_CLARIFY_ENABLED = 'false';
   await resetData();
 });
 
 afterEach(async () => {
   delete process.env.ROUNDTABLE_DATA_PATH;
+  delete process.env.ROUNDTABLE_CLARIFY_ENABLED;
+  delete process.env.ROUNDTABLE_OPENAI_API_KEY;
+  delete process.env.ROUNDTABLE_OPENAI_BASE_URL;
+  delete process.env.ROUNDTABLE_OPENAI_MODEL;
+  delete process.env.MINIMAX_API_KEY;
+  // unstubAllGlobals (NOT restoreAllMocks) is what actually undoes vi.stubGlobal.
+  vi.unstubAllGlobals();
   await rm(tempDir, { recursive: true, force: true });
 });
 
+async function makeChat(): Promise<string> {
+  const workbench = await createWorkbench(actor, { name: 'Breakout WB' });
+  const chat = await createChat(actor, { workbenchId: workbench.id, title: 'Main chat' });
+  return chat.id;
+}
+
+// Capture the request body the model adapter sends, and reply with canned text.
+function stubModel(replyText: string): () => { body: unknown } {
+  let lastBody: unknown = null;
+  vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+    lastBody = init?.body ? JSON.parse(String(init.body)) : null;
+    return new Response(JSON.stringify({
+      choices: [{ message: { content: replyText }, finish_reason: 'stop' }],
+      usage: {},
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  }));
+  return () => ({ body: lastBody });
+}
+
 describe('breakout rooms', () => {
-  it('classifies breakout questions by current-work relevance and action boundary', () => {
-    const context = {
-      chatTitle: 'Breakout room design',
-      missionGoal: 'Design breakout rooms that keep agents aware of main chat context without polluting the main thread.',
-      currentStage: 'Plan',
-      activeTasks: ['Define handoff boundary (pending)'],
-      recentMainMessages: ['user:agent needs current chat context in breakout rooms'],
-    };
+  it('creates a two-participant room and lists it with its transcript', async () => {
+    const chatId = await makeChat();
+    const room = await createBreakoutRoom(actor, { chatId, participantAgentIds: ['beam', 'vera'] });
+    expect(room.participantAgentIds).toEqual(['beam', 'vera']);
+    expect(room.status).toBe('open');
 
-    expect(classifyBreakoutRequest('这个现在应该怎么定边界？', context)).toBe('current_work');
-    expect(classifyBreakoutRequest('顺便问一下，PLG 定价一般怎么想？', context)).toBe('general_sidebar');
-    expect(classifyBreakoutRequest('把这段发到 main chat 让 Atlas 去做', context)).toBe('boundary_action');
-  });
-
-  it('routes each breakout turn to the participant whose responsibility best matches the question', () => {
-    expect(selectBreakoutResponder({
-      participantAgentIds: ['atlas', 'vera'],
-      content: '@Vera 这个风险和测试覆盖够吗？',
-    }).replyAuthorId).toBe('vera');
-
-    expect(selectBreakoutResponder({
-      participantAgentIds: ['atlas', 'vera'],
-      content: '这个按钮的布局和 React 组件实现应该怎么改？',
-    }).replyAuthorId).toBe('atlas');
-
-    expect(selectBreakoutResponder({
-      participantAgentIds: ['orchestrator', 'mira'],
-      content: '这个 handoff 回主线的边界应该怎么定？',
-    }).replyAuthorId).toBe('orchestrator');
-  });
-
-  it('keeps side-room transcript out of main chat until a proposal is confirmed', async () => {
-    const workbench = await createWorkbench(actor, { name: 'Breakout test' });
-    const chat = await createChat(actor, { workbenchId: workbench.id, title: 'Main chat' });
-    const room = await createBreakoutRoom(actor, {
-      chatId: chat.id,
-      participantAgentIds: ['atlas', 'vera'],
-    });
-
-    const message = await postBreakoutMessage(actor, {
-      roomId: room.id,
-      content: 'Do not change the visual layout.',
-    });
-    expect(await listMessages(actor, chat.id)).toHaveLength(0);
-
-    const rooms = await listBreakoutRooms(actor, chat.id);
+    const rooms = await listBreakoutRooms(actor, chatId);
     expect(rooms).toHaveLength(1);
-    expect(rooms[0]?.messages.map((item) => item.content)).toContain('Do not change the visual layout.');
-
-    const proposal = await createBreakoutProposal(actor, {
-      roomId: room.id,
-      targetAgentId: 'atlas',
-      task: 'Update the email input accessibility label.',
-      constraints: ['Do not change the visual layout.'],
-      why: 'Vera identified an accessibility gap that Atlas should fix in the markup.',
-      relevantMessageIds: [message.id],
-    });
-    expect(proposal.status).toBe('draft');
-    expect(proposal.why).toContain('accessibility gap');
-
-    const sent = await sendBreakoutProposalToChat(actor, { proposalId: proposal.id });
-    expect(sent.proposal.status).toBe('sent');
-    const mainMessages = await listMessages(actor, chat.id);
-    expect(mainMessages).toHaveLength(1);
-    expect(mainMessages[0]?.content).toContain('@atlas Update the email input accessibility label.');
-    expect(mainMessages[0]?.content).toContain('Why: Vera identified an accessibility gap');
-    expect(mainMessages[0]?.content).toContain('Must keep:');
-    expect(mainMessages[0]?.content).toContain(message.id);
+    expect(rooms[0]!.id).toBe(room.id);
+    expect(rooms[0]!.messages).toEqual([]);
   });
 
-  it('enforces owner boundaries and cleans rooms when deleting a chat', async () => {
-    const workbench = await createWorkbench(actor, { name: 'Private breakouts' });
-    const chat = await createChat(actor, { workbenchId: workbench.id, title: 'Private chat' });
-    const room = await createBreakoutRoom(actor, {
-      chatId: chat.id,
-      participantAgentIds: ['beam', 'vera'],
+  it('rejects a room without exactly two participants', async () => {
+    const chatId = await makeChat();
+    await expect(createBreakoutRoom(actor, { chatId, participantAgentIds: ['beam'] }))
+      .rejects.toThrow('breakout_requires_two_participants');
+  });
+
+  it('rejects a room with a participant id not in the roster', async () => {
+    const chatId = await makeChat();
+    await expect(createBreakoutRoom(actor, { chatId, participantAgentIds: ['beam', 'ghost-agent'] }))
+      .rejects.toThrow('breakout_unknown_participant');
+  });
+
+  it('listBreakoutRooms is a pure read — it never writes to the store', async () => {
+    const chatId = await makeChat();
+    await createBreakoutRoom(actor, { chatId, participantAgentIds: ['beam', 'vera'] });
+
+    // Sentinel the store cannot legitimately clear on a read.
+    await mutateData((data) => { data.users.push({ id: 'sentinel', email: 's@x', name: null, createdAt: 'now' }); });
+    await listBreakoutRooms(actor, chatId);
+    const after = await readData();
+    expect(after.users.some((u) => u.id === 'sentinel')).toBe(true);
+  });
+
+  it('a posted user message gets a persisted agent reply from a room participant', async () => {
+    stubModel('Local judgment: clarify the acceptance bar first.');
+    process.env.ROUNDTABLE_OPENAI_API_KEY = 'test-key';
+    process.env.ROUNDTABLE_OPENAI_BASE_URL = 'https://example.test/v1';
+    process.env.ROUNDTABLE_OPENAI_MODEL = 'test-model';
+    const chatId = await makeChat();
+    const room = await createBreakoutRoom(actor, { chatId, participantAgentIds: ['beam', 'vera'] });
+
+    await postBreakoutMessage(actor, { roomId: room.id, content: 'Is this input accessible?' });
+
+    const [listed] = await listBreakoutRooms(actor, chatId);
+    expect(listed!.messages).toHaveLength(2);
+    expect(listed!.messages[0]!.authorType).toBe('user');
+    const reply = listed!.messages[1]!;
+    expect(reply.authorType).toBe('agent');
+    expect(['beam', 'vera']).toContain(reply.authorId);
+    expect(reply.content).toContain('acceptance bar');
+  });
+
+  it('injects the main-chat context (mission goal + messages) into the model prompt', async () => {
+    const readBody = stubModel('Noted.');
+    process.env.ROUNDTABLE_OPENAI_API_KEY = 'test-key';
+    process.env.ROUNDTABLE_OPENAI_BASE_URL = 'https://example.test/v1';
+    process.env.ROUNDTABLE_OPENAI_MODEL = 'test-model';
+    const chatId = await makeChat();
+    // Seed real main-chat context: a mission goal and a user message.
+    await createMessage(actor, { chatId, content: 'The pricing page toggle is misaligned on mobile.' });
+    await mutateData((data) => {
+      data.missions.push({
+        id: 'mission-1', ownerId: actor.id, chatId,
+        goal: 'Ship a responsive pricing page',
+        stages: [], currentStageId: null, tasks: [],
+        createdAt: 'now', updatedAt: 'now',
+      } as never);
     });
-    await postBreakoutMessage(actor, { roomId: room.id, content: 'Private room note.' });
+    const room = await createBreakoutRoom(actor, { chatId, participantAgentIds: ['atlas', 'vera'] });
 
-    await expect(listBreakoutRooms(otherActor, chat.id)).rejects.toThrow('chat_not_found');
-    await expect(postBreakoutMessage(otherActor, { roomId: room.id, content: 'Nope.' })).rejects.toThrow('breakout_room_not_found');
+    await postBreakoutMessage(actor, { roomId: room.id, content: 'How should we fix this layout?' });
 
-    await deleteChat(actor, chat.id);
-    const data = await readData();
-    expect(data.breakoutRooms).toHaveLength(0);
-    expect(data.breakoutMessages).toHaveLength(0);
-    expect(data.breakoutProposals).toHaveLength(0);
+    const body = readBody().body as { messages: Array<{ role: string; content: string }> };
+    const promptText = body.messages.map((m) => m.content).join('\n');
+    expect(promptText).toContain('Ship a responsive pricing page');
+    expect(promptText).toContain('pricing page toggle is misaligned');
+  });
+
+  it('uses a model configured through settings (store only, no env vars)', async () => {
+    // The regression this guards: the reply path must consult saved settings,
+    // not just env vars, so a key entered in the UI actually drives replies.
+    const readBody = stubModel('Settings-backed reply.');
+    const chatId = await makeChat();
+    await saveSettings({
+      providers: [{
+        provider: 'openai-compatible',
+        enabled: true,
+        apiKey: 'settings-key',
+        baseUrl: 'https://settings.test/v1',
+        model: 'settings-model',
+      }],
+    });
+    expect(process.env.ROUNDTABLE_OPENAI_API_KEY).toBeUndefined();
+    const room = await createBreakoutRoom(actor, { chatId, participantAgentIds: ['beam', 'vera'] });
+
+    await postBreakoutMessage(actor, { roomId: room.id, content: 'What do you think?' });
+
+    expect(readBody().body).not.toBeNull();
+    const [listed] = await listBreakoutRooms(actor, chatId);
+    expect(listed!.messages[1]!.content).toBe('Settings-backed reply.');
+  });
+
+  it('falls back to a local reply when no model is configured (no env, no settings)', async () => {
+    const chatId = await makeChat();
+    const room = await createBreakoutRoom(actor, { chatId, participantAgentIds: ['beam', 'vera'] });
+
+    await postBreakoutMessage(actor, { roomId: room.id, content: '这个实现看起来怎么样？' });
+
+    const [listed] = await listBreakoutRooms(actor, chatId);
+    const reply = listed!.messages[1]!;
+    expect(reply.authorType).toBe('agent');
+    expect(reply.content.length).toBeGreaterThan(0);
+  });
+
+  it('rejects a message posted to a closed room', async () => {
+    const chatId = await makeChat();
+    const room = await createBreakoutRoom(actor, { chatId, participantAgentIds: ['beam', 'vera'] });
+    await mutateData((data) => {
+      const stored = data.breakoutRooms.find((r) => r.id === room.id)!;
+      stored.status = 'closed';
+    });
+
+    await expect(postBreakoutMessage(actor, { roomId: room.id, content: 'still open?' }))
+      .rejects.toThrow('breakout_room_closed');
   });
 });

@@ -1,12 +1,9 @@
 import { z } from 'zod';
 import { polishText, suggestTasks } from './actions/ai-actions.js';
 import {
-  createBreakoutProposal,
   createBreakoutRoom,
-  generateBreakoutAgentReply,
   listBreakoutRooms,
   postBreakoutMessage,
-  sendBreakoutProposalToChat,
 } from './actions/breakout-actions.js';
 import {
   createChat,
@@ -37,27 +34,6 @@ import { createTRPCRouter, protectedProcedure, publicProcedure } from './trpc.js
 const idInput = z.object({ id: z.string().min(1) });
 const chatIdInput = z.object({ chatId: z.string().min(1) });
 const workbenchIdInput = z.object({ workbenchId: z.string().min(1) });
-const breakoutContextInput = z.object({
-  chatTitle: z.string().optional(),
-  recentMainMessages: z.array(z.string()).optional(),
-  missionGoal: z.string().optional(),
-  currentStage: z.string().optional(),
-  activeTasks: z.array(z.string()).optional(),
-  detailSnippets: z.array(z.object({
-    source: z.enum(['main_message', 'artifact', 'task', 'mission']),
-    id: z.string().optional(),
-    label: z.string(),
-    text: z.string(),
-  })).optional(),
-  artifacts: z.array(z.object({
-    id: z.string(),
-    title: z.string(),
-    kind: z.string(),
-    ownerAgentId: z.string(),
-    version: z.number().optional(),
-    summary: z.string().optional(),
-  })).optional(),
-}).optional();
 
 const workbenchesRouter = createTRPCRouter({
   list: protectedProcedure.query(({ ctx }) => listWorkbenches(ctx.user)),
@@ -99,29 +75,8 @@ const breakoutsRouter = createTRPCRouter({
     .input(z.object({
       roomId: z.string().min(1),
       content: z.string().min(1),
-      authorType: z.enum(['user', 'agent', 'system']).optional(),
-      authorId: z.string().min(1).optional(),
     }))
     .mutation(({ ctx, input }) => postBreakoutMessage(ctx.user, input)),
-  createProposal: protectedProcedure
-    .input(z.object({
-      roomId: z.string().min(1),
-      targetAgentId: z.string().min(1),
-      task: z.string().min(1),
-      constraints: z.array(z.string()).optional(),
-      summary: z.string().optional(),
-      why: z.string().optional(),
-      relevantMessageIds: z.array(z.string()).optional(),
-    }))
-    .mutation(({ ctx, input }) => createBreakoutProposal(ctx.user, input)),
-  sendProposal: protectedProcedure
-    .input(z.object({
-      proposalId: z.string().min(1),
-      task: z.string().optional(),
-      constraints: z.array(z.string()).optional(),
-      why: z.string().optional(),
-    }))
-    .mutation(({ ctx, input }) => sendBreakoutProposalToChat(ctx.user, input)),
 });
 
 const artifactsRouter = createTRPCRouter({
@@ -235,21 +190,6 @@ const aiRouter = createTRPCRouter({
   suggestTasks: publicProcedure
     .input(z.object({ context: z.string().optional() }).optional())
     .query(({ ctx, input }) => suggestTasks(ctx.user, input?.context)),
-  breakoutReply: publicProcedure
-    .input(z.object({
-      roomId: z.string().min(1),
-      pendingMessageId: z.string().min(1).optional(),
-      participantAgentIds: z.array(z.string().min(1)).min(1),
-      replyAuthorId: z.string().min(1),
-      responderReason: z.string().optional(),
-      transcript: z.array(z.object({
-        authorType: z.enum(['user', 'agent', 'system']),
-        authorId: z.string().min(1),
-        content: z.string().min(1),
-      })).min(1),
-      context: breakoutContextInput,
-    }))
-    .mutation(({ input }) => generateBreakoutAgentReply(input)),
 });
 
 export const appRouter = createTRPCRouter({

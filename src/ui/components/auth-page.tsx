@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { FormEvent, MouseEvent } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { getProviders, signIn } from 'next-auth/react';
 
 type AuthMode = 'signin' | 'signup';
@@ -20,6 +21,7 @@ const agents = [
 ];
 
 export function AuthPage({ mode, callbackUrl = '/' }: AuthPageProps) {
+  const router = useRouter();
   const [email, setEmail] = useState('');
   const [name, setName] = useState('');
   const [workspaceName, setWorkspaceName] = useState('Product Squad');
@@ -30,6 +32,9 @@ export function AuthPage({ mode, callbackUrl = '/' }: AuthPageProps) {
   const isSignup = mode === 'signup';
   const target = useMemo(() => {
     if (!callbackUrl || callbackUrl.startsWith('/api/auth')) return '/';
+    // Only allow same-origin relative paths so callbackUrl can't drive an
+    // open redirect to an external site after sign-in.
+    if (!callbackUrl.startsWith('/') || callbackUrl.startsWith('//')) return '/';
     return callbackUrl;
   }, [callbackUrl]);
   const hasGoogle = Boolean(providers?.google);
@@ -72,7 +77,7 @@ export function AuthPage({ mode, callbackUrl = '/' }: AuthPageProps) {
     if (isSignup) {
       window.localStorage.setItem('roundtable.pendingWorkbenchName', workspaceName.trim() || 'Product Squad');
     }
-    window.location.assign(target);
+    router.push(result?.url || target);
   };
 
   const moveStage = (event: MouseEvent<HTMLElement>) => {

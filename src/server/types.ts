@@ -59,25 +59,6 @@ export type BreakoutMessage = {
   createdAt: string;
 };
 
-export type BreakoutProposalStatus = 'draft' | 'sent' | 'dismissed';
-
-export type BreakoutHandoffProposal = {
-  id: string;
-  ownerId: string;
-  roomId: string;
-  chatId: string;
-  targetAgentId: string;
-  task: string;
-  constraints: string[];
-  summary: string;
-  why?: string | undefined;
-  relevantMessageIds: string[];
-  status: BreakoutProposalStatus;
-  createdAt: string;
-  updatedAt: string;
-  sentAt: string | null;
-};
-
 export type Artifact = {
   id: string;
   chatId: string;

@@ -1,22 +1,36 @@
-import { id, mutateData, nowIso } from '../store.js';
+/*
+  Breakout rooms: real side rooms a user can sit in next to the main chat.
+
+  What this module owns:
+  - persistence of rooms and their messages (two participants per room),
+  - a contextual reply from one of the room's agents when the user posts,
+  - context injection: the room agent answers WITH the current main-chat
+    context (mission goal, active tasks, recent messages, artifacts) so it can
+    reason about "this / now / the current work" without the user re-explaining.
+
+  Deliberately NOT here: handoff proposals / "send to main chat". That flow was
+  removed because it never actually dispatched the handed-off task. Reply
+  generation reuses the SAME model-availability path as ai-actions.ts
+  (isOpenAICompatConfigured/isMiniMaxConfigured), so a key saved through the
+  settings UI drives real replies — env vars are not required.
+*/
+
+import { id, mutateData, nowIso, readData } from '../store.js';
 import type { RoundtableData } from '../store.js';
 import type {
   Actor,
-  BreakoutHandoffProposal,
   BreakoutMessage,
   BreakoutRoom,
   Chat,
-  Message,
 } from '../types.js';
 import { AGENT_ROSTER, resolveAgentMention } from './agent-roster.js';
 import type { AgentProfile } from './agent-roster.js';
-import { isMiniMaxAvailable, runOnMiniMax } from './adapters/minimax-adapter.js';
-import { isOpenAICompatAvailable, runOnOpenAICompat } from './adapters/openai-compat-adapter.js';
+import { isMiniMaxConfigured, runOnMiniMax } from './adapters/minimax-adapter.js';
+import { isOpenAICompatConfigured, runOnOpenAICompat } from './adapters/openai-compat-adapter.js';
 import { getChat } from './chat-actions.js';
 
 export type BreakoutRoomBundle = BreakoutRoom & {
   messages: BreakoutMessage[];
-  proposals: BreakoutHandoffProposal[];
 };
 
 export type BreakoutContextPackage = {
@@ -49,22 +63,21 @@ export type BreakoutResponderDecision = {
   scores: Array<{ agentId: string; score: number; matched: string[] }>;
 };
 
+// Pure read: never take the store write lock for a list query. Filtering and
+// sorting happen in memory over a readData() snapshot, matching listTurns /
+// listArtifactsByChat.
 export async function listBreakoutRooms(actor: Actor, chatId: string): Promise<BreakoutRoomBundle[]> {
   await requireChat(actor, chatId);
-  return mutateData((data) =>
-    data.breakoutRooms
-      .filter((room) => room.ownerId === actor.id && room.chatId === chatId)
-      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-      .map((room) => ({
-        ...room,
-        messages: data.breakoutMessages
-          .filter((message) => message.ownerId === actor.id && message.roomId === room.id)
-          .sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
-        proposals: data.breakoutProposals
-          .filter((proposal) => proposal.ownerId === actor.id && proposal.roomId === room.id)
-          .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
-      })),
-  );
+  const data = await readData();
+  return data.breakoutRooms
+    .filter((room) => room.ownerId === actor.id && room.chatId === chatId)
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+    .map((room) => ({
+      ...room,
+      messages: data.breakoutMessages
+        .filter((message) => message.ownerId === actor.id && message.roomId === room.id)
+        .sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
+    }));
 }
 
 export async function createBreakoutRoom(
@@ -74,6 +87,9 @@ export async function createBreakoutRoom(
   await requireChat(actor, input.chatId);
   const participants = Array.from(new Set(input.participantAgentIds.map((item) => item.trim()).filter(Boolean)));
   if (participants.length !== 2) throw new Error('breakout_requires_two_participants');
+  if (participants.some((agentId) => !AGENT_ROSTER.some((agent) => agent.id === agentId))) {
+    throw new Error('breakout_unknown_participant');
+  }
 
   return mutateData((data) => {
     const now = nowIso();
@@ -90,7 +106,7 @@ export async function createBreakoutRoom(
     };
     data.breakoutRooms.push(room);
     touchChat(data.chats, input.chatId, now);
-    return { ...room, messages: [], proposals: [] };
+    return { ...room, messages: [] };
   });
 }
 
@@ -105,8 +121,12 @@ export async function postBreakoutMessage(
 ): Promise<BreakoutMessage> {
   const content = input.content.trim();
   if (!content) throw new Error('missing_message_content');
+
+  // First write: persist the user message and take a context snapshot while we
+  // hold the lock. The model call happens AFTER the lock is released.
   const saved = await mutateData((data) => {
     const room = requireRoomInData(data.breakoutRooms, actor, input.roomId);
+    if (room.status === 'closed') throw new Error('breakout_room_closed');
     const now = nowIso();
     const message: BreakoutMessage = {
       id: id('brmsg'),
@@ -130,115 +150,27 @@ export async function postBreakoutMessage(
       context: buildBreakoutContext(data, actor, room.chatId),
     };
   });
-  if (saved.message.authorType === 'user') {
-    const responder = selectBreakoutResponder({
-      participantAgentIds: saved.room.participantAgentIds,
-      content: saved.message.content,
-      context: saved.context,
-    });
-    const replyText = await generateBreakoutAgentReply({
-      participantAgentIds: saved.room.participantAgentIds,
-      replyAuthorId: responder.replyAuthorId,
-      responderReason: responder.reason,
-      transcript: saved.transcript,
-      context: saved.context,
-    });
-    await appendBreakoutAgentMessage(actor, {
-      roomId: saved.room.id,
-      authorId: responder.replyAuthorId,
-      content: replyText,
-    });
-  }
+
+  if (saved.message.authorType !== 'user') return saved.message;
+
+  const responder = selectBreakoutResponder({
+    participantAgentIds: saved.room.participantAgentIds,
+    content: saved.message.content,
+    context: saved.context,
+  });
+  const replyText = await generateBreakoutAgentReply({
+    participantAgentIds: saved.room.participantAgentIds,
+    replyAuthorId: responder.replyAuthorId,
+    responderReason: responder.reason,
+    transcript: saved.transcript,
+    context: saved.context,
+  });
+  await appendBreakoutAgentMessage(actor, {
+    roomId: saved.room.id,
+    authorId: responder.replyAuthorId,
+    content: replyText,
+  });
   return saved.message;
-}
-
-export async function createBreakoutProposal(
-  actor: Actor,
-  input: {
-    roomId: string;
-    targetAgentId: string;
-    task: string;
-    constraints?: string[] | undefined;
-    summary?: string | undefined;
-    why?: string | undefined;
-    relevantMessageIds?: string[] | undefined;
-  },
-): Promise<BreakoutHandoffProposal> {
-  const task = input.task.trim();
-  if (!task) throw new Error('missing_breakout_task');
-  const targetAgentId = input.targetAgentId.trim();
-  if (!targetAgentId) throw new Error('missing_breakout_target');
-
-  return mutateData((data) => {
-    const room = requireRoomInData(data.breakoutRooms, actor, input.roomId);
-    const roomMessages = data.breakoutMessages
-      .filter((message) => message.ownerId === actor.id && message.roomId === room.id)
-      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-    const relevantMessageIds = input.relevantMessageIds?.length
-      ? input.relevantMessageIds.filter((messageId) => roomMessages.some((message) => message.id === messageId))
-      : roomMessages.slice(-4).map((message) => message.id);
-    const now = nowIso();
-    const proposal: BreakoutHandoffProposal = {
-      id: id('brprop'),
-      ownerId: actor.id,
-      roomId: room.id,
-      chatId: room.chatId,
-      targetAgentId,
-      task,
-      constraints: cleanList(input.constraints),
-      summary: input.summary?.trim() || summarizeMessages(roomMessages),
-      why: input.why?.trim() || handoffWhy(roomMessages, targetAgentId),
-      relevantMessageIds,
-      status: 'draft',
-      createdAt: now,
-      updatedAt: now,
-      sentAt: null,
-    };
-    data.breakoutProposals.push(proposal);
-    room.updatedAt = now;
-    touchChat(data.chats, room.chatId, now);
-    return proposal;
-  });
-}
-
-export async function sendBreakoutProposalToChat(
-  actor: Actor,
-  input: { proposalId: string; task?: string | undefined; constraints?: string[] | undefined; why?: string | undefined },
-): Promise<{ proposal: BreakoutHandoffProposal; message: Message }> {
-  return mutateData((data) => {
-    const proposal = data.breakoutProposals.find((item) => item.ownerId === actor.id && item.id === input.proposalId);
-    if (!proposal) throw new Error('breakout_proposal_not_found');
-    const room = requireRoomInData(data.breakoutRooms, actor, proposal.roomId);
-    const chat = data.chats.find((item) => item.ownerId === actor.id && item.id === proposal.chatId);
-    if (!chat) throw new Error('chat_not_found');
-
-    const now = nowIso();
-    const nextTask = input.task?.trim() || proposal.task;
-    const nextConstraints = input.constraints ? cleanList(input.constraints) : proposal.constraints;
-    const nextWhy = input.why?.trim() || proposal.why;
-    proposal.task = nextTask;
-    proposal.constraints = nextConstraints;
-    proposal.why = nextWhy;
-    proposal.status = 'sent';
-    proposal.sentAt = now;
-    proposal.updatedAt = now;
-    room.status = 'closed';
-    room.closedAt = now;
-    room.updatedAt = now;
-    chat.updatedAt = now;
-
-    const message: Message = {
-      id: id('msg'),
-      ownerId: actor.id,
-      chatId: proposal.chatId,
-      authorType: 'user',
-      authorId: actor.id,
-      content: formatProposalMessage(proposal),
-      createdAt: now,
-    };
-    data.messages.push(message);
-    return { proposal, message };
-  });
 }
 
 async function requireChat(actor: Actor, chatId: string): Promise<Chat> {
@@ -258,49 +190,16 @@ function touchChat(chats: Chat[], chatId: string, updatedAt: string): void {
   if (chat) chat.updatedAt = updatedAt;
 }
 
-function cleanList(items: string[] | undefined): string[] {
-  return Array.from(new Set((items || []).map((item) => item.trim()).filter(Boolean))).slice(0, 5);
-}
-
-function summarizeMessages(messages: BreakoutMessage[]): string {
-  const latest = messages.slice(-3).map((message) => message.content.trim()).filter(Boolean);
-  return latest.length ? latest.join(' ') : 'Breakout discussion reached an action-ready handoff.';
-}
-
-function formatProposalMessage(proposal: BreakoutHandoffProposal): string {
-  const lines = [
-    `@${proposal.targetAgentId} ${proposal.task}`,
-    '',
-    `From breakout room ${proposal.roomId}.`,
-  ];
-  if (proposal.why) {
-    lines.push('', `Why: ${proposal.why}`);
-  }
-  if (proposal.constraints.length) {
-    lines.push('', 'Must keep:');
-    for (const constraint of proposal.constraints) lines.push(`- ${constraint}`);
-  }
-  if (proposal.summary) {
-    lines.push('', `Context summary: ${proposal.summary}`);
-  }
-  lines.push('', `Relevant breakout messages: ${proposal.relevantMessageIds.join(', ') || 'none'}`);
-  return lines.join('\n');
-}
-
-function handoffWhy(messages: BreakoutMessage[], targetAgentId: string): string {
-  const latestAgent = [...messages].reverse().find((message) => message.authorType === 'agent' && message.authorId === targetAgentId)?.content;
-  const latestAnyAgent = [...messages].reverse().find((message) => message.authorType === 'agent')?.content;
-  const latestUser = [...messages].reverse().find((message) => message.authorType === 'user')?.content;
-  const text = latestAgent || latestAnyAgent || latestUser || '';
-  return summarizeArtifact(text) || 'The breakout discussion reached an action-ready decision.';
-}
-
 async function appendBreakoutAgentMessage(
   actor: Actor,
   input: { roomId: string; authorId: string; content: string },
-): Promise<BreakoutMessage> {
+): Promise<BreakoutMessage | null> {
   return mutateData((data) => {
-    const room = requireRoomInData(data.breakoutRooms, actor, input.roomId);
+    // The user message already committed and the model call has run; if the room
+    // vanished or closed in the meantime, drop the reply rather than reject a
+    // post that already succeeded.
+    const room = data.breakoutRooms.find((item) => item.ownerId === actor.id && item.id === input.roomId);
+    if (!room || room.status === 'closed') return null;
     const now = nowIso();
     const message: BreakoutMessage = {
       id: id('brmsg'),
@@ -313,7 +212,6 @@ async function appendBreakoutAgentMessage(
     };
     data.breakoutMessages.push(message);
     room.updatedAt = now;
-    touchChat(data.chats, room.chatId, now);
     return message;
   });
 }
@@ -346,10 +244,10 @@ export async function generateBreakoutAgentReply(input: {
         'You are replying inside a Roundtable breakout room.',
         `You are ${speaker}. Other participants: ${participants}.`,
         input.responderReason ? `You were selected to answer because: ${input.responderReason}.` : null,
-        'This room is for brainstorming, clarification, tradeoff thinking, and forming an action-ready handoff.',
+        'This room is for brainstorming, clarification, tradeoff thinking, and forming an action-ready plan.',
         'Reply as the agent, not as the system. Do not execute work, do not claim files changed, and do not send anything to the main chat.',
         'Classify the user request before answering:',
-        '- CURRENT_WORK: it refers to the current mission, main chat, artifacts, handoff, UI, code, or uses pronouns like this/now/current that resolve to the current work. Use the provided main-chat context and current-chat detail snippets without asking permission.',
+        '- CURRENT_WORK: it refers to the current mission, main chat, artifacts, UI, code, or uses pronouns like this/now/current that resolve to the current work. Use the provided main-chat context and current-chat detail snippets without asking permission.',
         '- GENERAL_SIDEBAR: it is an unrelated question or brainstorm. Answer normally in your agent voice and do not force the current mission context.',
         '- BOUNDARY_ACTION: it asks to write back to main chat, execute work, modify files, access another project/chat/workspace, call external services, or store durable memory. Do not do the action; explain that it needs an explicit handoff or confirmation.',
         'If CURRENT_WORK still lacks a specific detail after the supplied current-chat context, say exactly what is missing and offer a reasonable assumption or next question. Do not fabricate unseen details.',
@@ -375,11 +273,10 @@ export async function generateBreakoutAgentReply(input: {
     },
   ];
   try {
-    if (isOpenAICompatAvailable()) {
+    if (await isOpenAICompatConfigured()) {
       const run = await runOnOpenAICompat({ messages, maxTokens: 420, temperature: 0.75, timeoutMs: 45_000 });
       if (run.text.trim()) return run.text.trim();
-    }
-    if (isMiniMaxAvailable()) {
+    } else if (await isMiniMaxConfigured()) {
       const run = await runOnMiniMax({ messages, maxTokens: 420, temperature: 0.75, timeoutMs: 45_000 });
       if (run.text.trim()) return run.text.trim();
     }
@@ -393,7 +290,6 @@ export function classifyBreakoutRequest(
   content: string,
   context: BreakoutContextPackage | undefined,
 ): BreakoutRequestRelation {
-  const text = content.toLowerCase();
   if (/(写回|发到|发送到|同步到|带回|提交到|存到|记到|保存到|改文件|修改文件|执行|开始做|去做|跑命令|部署|调用外部|另一个项目|别的项目|其他项目|另一个 chat|别的 chat|main chat|主\s*chat|主线|memory|remember|save.*memory|execute|run command|deploy|modify files|write back)/i.test(content)) {
     return 'boundary_action';
   }
@@ -407,10 +303,10 @@ export function classifyBreakoutRequest(
     ...(context?.artifacts || []).flatMap((artifact) => [artifact.title, artifact.kind, artifact.summary]),
   ].filter(Boolean).join(' ').toLowerCase();
   const hasCurrentContext = contextText.trim().length > 0;
-  const currentWorkCue = /(这个|这块|现在|当前|刚才|上面|这里|那个|主线|主\s*chat|当前\s*chat|mission|plan|task|handoff|breakout|room|agent|artifact|按钮|页面|代码|实现|设计|上下文|context|ui|auth|oauth|sign in|sign up)/i.test(content);
+  const currentWorkCue = /(这个|这块|现在|当前|刚才|上面|这里|那个|主线|主\s*chat|当前\s*chat|mission|plan|task|breakout|room|agent|artifact|按钮|页面|代码|实现|设计|上下文|context|ui|auth|oauth|sign in|sign up)/i.test(content);
   if (currentWorkCue && hasCurrentContext) return 'current_work';
 
-  const queryTokens = tokenizeForOverlap(text);
+  const queryTokens = tokenizeForOverlap(content.toLowerCase());
   const contextTokens = new Set(tokenizeForOverlap(contextText));
   const overlap = queryTokens.filter((token) => contextTokens.has(token)).length;
   return overlap >= 2 ? 'current_work' : 'general_sidebar';
@@ -482,7 +378,7 @@ function scoreAgentForBreakout(agent: AgentProfile, text: string): { score: numb
   };
 
   if (agent.role === 'planner') {
-    add('planning/handoff', 8, [/handoff|workflow|breakout|room|agent|context|mission|plan|task|scope/i, /规划|计划|流程|拆解|任务|分工|边界|上下文|主线|房间|带回|交接|执行/i]);
+    add('planning', 8, [/workflow|breakout|room|agent|context|mission|plan|task|scope/i, /规划|计划|流程|拆解|任务|分工|边界|上下文|主线|房间|执行/i]);
   }
   if (agent.role === 'pm') {
     add('product/requirements', 8, [/product|requirement|user|ux|copy|value|acceptance|spec|persona|pricing/i, /产品|需求|用户|体验|文案|价值|验收|范围|受众|定价/i]);
@@ -649,8 +545,8 @@ function formatBreakoutDetailSnippets(snippets: NonNullable<BreakoutContextPacka
   if (!snippets.length) return '- No extra current-chat detail snippets were needed or available.';
   return snippets
     .map((snippet) => {
-      const id = snippet.id ? ` ${snippet.id}` : '';
-      return `- [${snippet.source}${id}] ${snippet.label}: ${summarizeArtifact(snippet.text) || ''}`;
+      const snippetId = snippet.id ? ` ${snippet.id}` : '';
+      return `- [${snippet.source}${snippetId}] ${snippet.label}: ${summarizeArtifact(snippet.text) || ''}`;
     })
     .join('\n');
 }
@@ -681,7 +577,7 @@ function agentLabel(agentId: string): string {
 function localBreakoutReply(content: string): string {
   const text = content.trim();
   if (/[?？]|吗\b|么\b/.test(text)) {
-    return '我看到了。模型暂时不可用时，我先给一个本地判断：这个问题需要先明确评价标准，再决定是否带回主 chat 执行。你想让我重点看视觉、可用性，还是是否符合当前需求？';
+    return '我看到了。模型暂时不可用时，我先给一个本地判断：这个问题需要先明确评价标准，再决定下一步。你想让我重点看视觉、可用性，还是是否符合当前需求？';
   }
-  return '我收到了。模型暂时不可用，所以我先把这条作为 breakout 上下文保留；你可以继续追问，或整理成 handoff 带回主 chat。';
+  return '我收到了。模型暂时不可用，所以我先把这条作为 breakout 上下文保留；你可以继续追问，或把结论整理清楚再回主 chat。';
 }
