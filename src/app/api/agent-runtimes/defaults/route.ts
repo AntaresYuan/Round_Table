@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { saveRuntimeDefaultConfig } from '@/server/actions/runtime-actions';
-import { jsonError, routeActor } from '@/server/route-utils';
+import { jsonError, requireProductionActor } from '@/server/route-utils';
 
 const BodySchema = z.object({
   runtime: z.string().min(1),
@@ -17,7 +17,7 @@ const BodySchema = z.object({
 export async function POST(req: Request) {
   try {
     const body = BodySchema.parse(await req.json());
-    const actor = await routeActor();
+    const actor = await requireProductionActor();
     const config = await saveRuntimeDefaultConfig({ ...body, actor });
     return Response.json({
       ok: true,

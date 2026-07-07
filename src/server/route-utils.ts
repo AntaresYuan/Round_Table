@@ -10,6 +10,12 @@ export async function routeActor(): Promise<Actor | null> {
   return session?.user ?? null;
 }
 
+export async function requireProductionActor(): Promise<Actor | null> {
+  const actor = await routeActor();
+  if (!actor && process.env.NODE_ENV === 'production') throw new Error('unauthorized');
+  return actor;
+}
+
 export function jsonError(error: unknown): Response {
   if (error instanceof ActionError) {
     return Response.json({ ok: false, error: error.code }, { status: error.status });

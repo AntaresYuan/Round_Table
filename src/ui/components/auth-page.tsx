@@ -42,7 +42,14 @@ export function AuthPage({ mode, callbackUrl = '/' }: AuthPageProps) {
 
   useEffect(() => {
     getProviders()
-      .then((items) => setProviders(items as Record<string, { id: string; name: string }> | null))
+      .then((items) => {
+        if (!items) {
+          setProviders({});
+          setError('Could not load sign-in options. Check the deployed auth configuration.');
+          return;
+        }
+        setProviders(items as Record<string, { id: string; name: string }>);
+      })
       .catch(() => {
         setProviders({});
         setError('Could not load sign-in options. Please refresh and try again.');

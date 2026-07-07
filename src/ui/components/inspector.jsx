@@ -11,6 +11,7 @@ import { Avatar, RoleTag, Icon, Spinner, tint, alpha } from './primitives';
 import { ArtifactRenderer, CodeBlock, VChip, HandoffCard, iconBtn, normalizeArtifactForDisplay } from './cards';
 import { LocalLiveThread } from './live-turn';
 import { Thread } from './stage-scene';
+import { MemoryPanel } from './memory-panel';
 import { sceneAt, meetingNotes } from './roundtable';
 import { liveArtifactsFromTurns } from '../lib/live-scene';
 import { bundlePreviewArtifacts, withBundledPreview } from '../lib/preview-html';
@@ -187,7 +188,7 @@ function FileRow({ art, agents, onOpen, activeChatId }) {
     </button>
   );
 }
-function InspectorPanel({ tab, setTab, clock, agents, scene, width, onOpenArtifact, onAction, onClose, authed, live, liveArtifacts, liveMessages, liveHandoffs, activeChatId, localTurns, allLocalTurns, localStatus, onApproveLocalTurn, localTurnActions, onRewrite }) {
+function InspectorPanel({ tab, setTab, clock, agents, scene, width, onOpenArtifact, onAction, onClose, authed, live, liveArtifacts, liveMessages, liveHandoffs, activeChatId, localTurns, allLocalTurns, localStatus, onApproveLocalTurn, localTurnActions, onRewrite, memory }) {
   const placed = sceneAt(clock).placed;
   const hasLocalTurns = localTurns && localTurns.length > 0;
   // Files aggregate across the WHOLE chat (allLocalTurns), not just the active
@@ -218,6 +219,7 @@ function InspectorPanel({ tab, setTab, clock, agents, scene, width, onOpenArtifa
         {tabBtn('chat', 'Chat')}
         {tabBtn('files', `Files · ${created.length + provided.length}`)}
         {tabBtn('notes', 'Notes')}
+        {tabBtn('memory', 'Memory')}
         <button onClick={onClose} style={{ ...iconBtn, border: 'none', background: 'transparent' }}><Icon name="x" size={15} /></button>
       </div>
       <div style={{ borderBottom: '1px solid var(--border)' }} />
@@ -247,6 +249,8 @@ function InspectorPanel({ tab, setTab, clock, agents, scene, width, onOpenArtifa
             ? <div style={{ fontSize: 12.5, color: 'var(--text-faint)', fontStyle: 'italic', padding: '4px 2px' }}>Nothing yet — artifacts land here as the team works.</div>
             : created.map((a) => <FileRow key={a.id} art={a} agents={agents} onOpen={(art) => onOpenArtifact(withBundledPreview(art, created))} activeChatId={activeChatId} />)}
         </div>
+      ) : tab === 'memory' ? (
+        <MemoryPanel memory={memory} />
       ) : live || hasLocalTurns ? (
         <LiveNotes agents={agents} artifacts={created} handoffs={liveHandoffs} />
       ) : (

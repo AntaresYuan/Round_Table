@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { startDirectRuntimeConversation } from '@/server/actions/runtime-actions';
-import { jsonError } from '@/server/route-utils';
+import { jsonError, requireProductionActor } from '@/server/route-utils';
 
 const BodySchema = z.object({
   agentId: z.string().min(1),
@@ -10,6 +10,7 @@ const BodySchema = z.object({
 
 export async function POST(req: Request) {
   try {
+    await requireProductionActor();
     const body = BodySchema.parse(await req.json());
     return Response.json({ ok: true, conversation: await startDirectRuntimeConversation(body) });
   } catch (error) {

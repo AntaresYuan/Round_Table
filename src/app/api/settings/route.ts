@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { listSettingsState, saveSettings } from '@/server/actions/settings-actions';
-import { jsonError } from '@/server/route-utils';
+import { jsonError, requireProductionActor } from '@/server/route-utils';
 
 const ProviderSchema = z.object({
   provider: z.string().min(1),
@@ -19,6 +19,7 @@ const BodySchema = z.object({
 
 export async function GET() {
   try {
+    await requireProductionActor();
     return Response.json({ ok: true, state: await listSettingsState() });
   } catch (error) {
     return jsonError(error);
@@ -27,6 +28,7 @@ export async function GET() {
 
 export async function POST(req: Request) {
   try {
+    await requireProductionActor();
     const body = BodySchema.parse(await req.json());
     return Response.json({ ok: true, state: await saveSettings(body) });
   } catch (error) {

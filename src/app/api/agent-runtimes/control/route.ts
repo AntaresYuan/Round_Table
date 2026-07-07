@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { stopRuntimeConversation } from '@/server/actions/runtime-actions';
-import { jsonError } from '@/server/route-utils';
+import { jsonError, requireProductionActor } from '@/server/route-utils';
 
 const BodySchema = z.object({
   conversationId: z.string().min(1),
@@ -9,6 +9,7 @@ const BodySchema = z.object({
 
 export async function POST(req: Request) {
   try {
+    await requireProductionActor();
     const body = BodySchema.parse(await req.json());
     if (body.action === 'stop') {
       return Response.json({ ok: true, conversation: await stopRuntimeConversation(body.conversationId) });

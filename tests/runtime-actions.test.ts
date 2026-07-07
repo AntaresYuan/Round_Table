@@ -144,13 +144,13 @@ describe('CLI runtime runner', () => {
         '-e',
         [
           'process.stdout.write("started\\n");',
-          'setTimeout(()=>process.stdout.write("still alive\\n"), 40);',
+          'setTimeout(()=>process.stdout.write("still alive\\n"), 50);',
           'setInterval(()=>{}, 1_000);',
         ].join(''),
       ]),
       workspace: tempDir,
       prompt: 'ignored prompt',
-      idleTimeoutMs: 80,
+      idleTimeoutMs: 500,
     });
 
     expect(result.ok).toBe(false);

@@ -769,6 +769,52 @@ function App() {
   const postBreakoutMessage = trpc.breakouts.postMessage.useMutation({
     onSettled: () => { if (activeChatId) trpcUtils.breakouts.listRooms.invalidate({ chatId: activeChatId }); },
   });
+  const userProfileQ = trpc.userProfile.get.useQuery(undefined, { enabled: authed });
+  const workbenchPinsQ = trpc.workbenchPinned.list.useQuery(
+    { workbenchId: activeWorkbenchId ?? '' },
+    { enabled: authed && !!activeWorkbenchId },
+  );
+  const saveUserProfile = trpc.userProfile.update.useMutation({
+    onSuccess: () => trpcUtils.userProfile.get.invalidate(),
+  });
+  const addWorkbenchPin = trpc.workbenchPinned.pin.useMutation({
+    onSuccess: () => {
+      if (activeWorkbenchId) trpcUtils.workbenchPinned.list.invalidate({ workbenchId: activeWorkbenchId });
+    },
+  });
+  const removeWorkbenchPin = trpc.workbenchPinned.unpin.useMutation({
+    onSuccess: () => {
+      if (activeWorkbenchId) trpcUtils.workbenchPinned.list.invalidate({ workbenchId: activeWorkbenchId });
+    },
+  });
+  const memoryPanel = useMemo(() => ({
+    live: authed,
+    profile: userProfileQ.data ?? null,
+    pins: workbenchPinsQ.data ?? [],
+    workbench: activeWorkbench,
+    profileSaving: saveUserProfile.isPending,
+    pinSaving: addWorkbenchPin.isPending || removeWorkbenchPin.isPending,
+    profileError: saveUserProfile.error?.message ?? null,
+    pinError: addWorkbenchPin.error?.message || removeWorkbenchPin.error?.message || null,
+    onSaveProfile: (patch) => saveUserProfile.mutate(patch),
+    onAddPin: (content) => {
+      if (!activeWorkbenchId) return;
+      addWorkbenchPin.mutate({ workbenchId: activeWorkbenchId, content });
+    },
+    onRemovePin: (id) => {
+      if (!activeWorkbenchId) return;
+      removeWorkbenchPin.mutate({ workbenchId: activeWorkbenchId, id });
+    },
+  }), [
+    authed,
+    userProfileQ.data,
+    workbenchPinsQ.data,
+    activeWorkbench,
+    activeWorkbenchId,
+    saveUserProfile,
+    addWorkbenchPin,
+    removeWorkbenchPin,
+  ]);
   const agents = useMemo(() => palettize(t.palette), [t.palette, memberIds]);
   const railWorkbench = authed && activeWorkbench
     ? { ...activeWorkbench, members: RT.WORKBENCH.members }
@@ -1346,7 +1392,7 @@ function App() {
                   localTurns={activeLocalTurns.length ? activeLocalTurns : localTurns} allLocalTurns={localTurns} localStatus={localStatus} onApproveLocalTurn={approveLocalTurn}
                   localTurnActions={{ interrupt: interruptLocalTurn, redispatch: redispatchLocalTurn, discard: discardLocalTurn, clarify: answerLocalClarification, approve: approveLocalTurn, delivery: decideLocalDelivery }}
                   onOpenArtifact={setDrawerArt} onAction={onAction} onClose={() => setNotesOpen(false)}
-                  onRewrite={sendComposerMessage} />}
+                  onRewrite={sendComposerMessage} memory={memoryPanel} />}
               </div>
               <Dock st={st} agents={agents} scene={scene} onAction={onAction}
                 onOpenChat={() => { setInspectorTab('chat'); setNotesOpen(true); }}

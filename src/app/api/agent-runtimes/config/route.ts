@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { saveAgentRuntimeConfig } from '@/server/actions/runtime-actions';
-import { jsonError, routeActor } from '@/server/route-utils';
+import { jsonError, requireProductionActor } from '@/server/route-utils';
 
 const BodySchema = z.object({
   agentId: z.string().min(1),
@@ -17,7 +17,7 @@ const BodySchema = z.object({
 export async function POST(req: Request) {
   try {
     const body = BodySchema.parse(await req.json());
-    const actor = await routeActor();
+    const actor = await requireProductionActor();
     return Response.json({ ok: true, config: await saveAgentRuntimeConfig({ ...body, actor }) });
   } catch (error) {
     return jsonError(error);
