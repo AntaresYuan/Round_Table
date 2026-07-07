@@ -219,7 +219,7 @@ function InspectorPanel({ tab, setTab, clock, agents, scene, width, onOpenArtifa
         {tabBtn('chat', 'Chat')}
         {tabBtn('files', `Files · ${created.length + provided.length}`)}
         {tabBtn('notes', 'Notes')}
-        {tabBtn('memory', 'Memory')}
+        {tabBtn('memory', 'Guidance')}
         <button onClick={onClose} style={{ ...iconBtn, border: 'none', background: 'transparent' }}><Icon name="x" size={15} /></button>
       </div>
       <div style={{ borderBottom: '1px solid var(--border)' }} />
