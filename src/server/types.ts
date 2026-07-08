@@ -35,17 +35,46 @@ export type Message = {
   createdAt: string;
 };
 
+export type BreakoutRoomStatus = 'open' | 'closed';
+
+export type BreakoutRoom = {
+  id: string;
+  ownerId: string;
+  chatId: string;
+  createdBy: string;
+  participantAgentIds: string[];
+  status: BreakoutRoomStatus;
+  createdAt: string;
+  updatedAt: string;
+  closedAt: string | null;
+};
+
+export type BreakoutMessage = {
+  id: string;
+  ownerId: string;
+  roomId: string;
+  authorType: 'user' | 'agent' | 'system';
+  authorId: string;
+  content: string;
+  createdAt: string;
+};
+
 export type Artifact = {
   id: string;
   chatId: string;
   kind: ArtifactKind;
   title: string;
+  // The agent that produced the CURRENT version — on a version bump this is
+  // updated to the last editor, which is what makes per-file blame possible.
   ownerAgentId: string;
   version: number;
   uri: string;
   preview: string | null;
   code: string | null;
   createdAt: string;
+  // Line-level stats for the latest version: all-added on creation, computed
+  // against the previous version on each bump. Absent on legacy artifacts.
+  change?: { added: number; removed: number } | null;
 };
 
 export type WorkflowSeat =
@@ -101,6 +130,111 @@ export type WorkflowTemplate = {
 };
 
 export type AgentRole = 'planner' | 'pm' | 'architect' | 'implementer' | 'reviewer' | 'fixer';
+
+export type AgentRuntimeKind =
+  | 'local-dispatch'
+  | 'claude-code'
+  | 'claude-code-router'
+  | 'codex'
+  | 'opencode';
+
+export type AgentRuntimeInteractionMode = 'auto' | 'manual';
+export type AgentRuntimeEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
+export type AgentRuntimeConfig = {
+  agentId: string;
+  runtime: AgentRuntimeKind;
+  command: string | null;
+  args: string[];
+  env: Record<string, string>;
+  model: string | null;
+  modelProvider: ModelProviderKind | null;
+  interactionMode: AgentRuntimeInteractionMode | null;
+  effort: AgentRuntimeEffort | null;
+  updatedAt: string;
+};
+
+export type AgentRuntimeDefaultConfig = {
+  runtime: AgentRuntimeKind;
+  command: string | null;
+  args: string[];
+  env: Record<string, string>;
+  model: string | null;
+  modelProvider: ModelProviderKind | null;
+  interactionMode: AgentRuntimeInteractionMode | null;
+  effort: AgentRuntimeEffort | null;
+  updatedAt: string;
+};
+
+export type AgentRuntimeConversationStatus = 'running' | 'completed' | 'failed' | 'stopped';
+
+export type AgentRuntimeTranscriptEntry = {
+  at: string;
+  kind: 'status' | 'thinking' | 'response' | 'error';
+  content: string;
+};
+
+// Response-only view of a task's live runtime conversation, attached to turns
+// by listTurns so the polling UI can stream agent activity while a run is hot.
+// Never persisted on the turn itself — conversations remain the source of truth.
+export type TurnTaskActivity = {
+  conversationId: string;
+  agentId: string;
+  runtime: AgentRuntimeKind;
+  status: AgentRuntimeConversationStatus;
+  error: string | null;
+  updatedAt: string;
+  transcript: AgentRuntimeTranscriptEntry[];
+};
+
+export type TurnLiveActivity = Record<string, TurnTaskActivity>;
+
+export type AgentRuntimeConversation = {
+  id: string;
+  agentId: string;
+  role: AgentRole;
+  runtime: AgentRuntimeKind;
+  title: string;
+  turnId: string | null;
+  taskId: string | null;
+  workspacePath: string;
+  cwd: string;
+  command: string;
+  pid: number | null;
+  status: AgentRuntimeConversationStatus;
+  startedAt: string;
+  updatedAt: string;
+  finishedAt: string | null;
+  events: AgentEvent[];
+  transcript: AgentRuntimeTranscriptEntry[];
+  error: string | null;
+  // CLI-native session id (claude session_id / codex thread_id / opencode
+  // sessionID) captured from the run, when the runtime reported one. Optional:
+  // records predate this field.
+  sessionId?: string | null;
+};
+
+export type ModelProviderKind = 'minimax' | 'openai-compatible';
+
+export type ModelProviderConfig = {
+  provider: ModelProviderKind;
+  enabled: boolean;
+  label: string;
+  baseUrl: string;
+  model: string;
+  apiKey: string | null;
+  updatedAt: string;
+};
+
+export type RoundtableSettings = {
+  defaultAgentAdapter: string | null;
+  modelProviders: ModelProviderConfig[];
+  // User-edited workflow templates. A custom template with a builtin id
+  // OVERRIDES that builtin everywhere (resolution, auto-select, plan
+  // generation); novel ids are additional selectable workflows.
+  workflowTemplates: WorkflowTemplate[];
+  updatedAt: string;
+};
 
 export type AgentCard = {
   id: string;
@@ -160,6 +294,22 @@ export type UserProfile = {
   updatedAt: string;
 };
 
+// Retained for WorkingStyleSnapshot: profile default skills and stored turn
+// snapshots still carry a source/scope even though the skills panel is gone.
+export type UserSkillSource = 'user' | 'observed' | 'workspace' | 'recommended';
+export type UserSkillScope = 'personal' | 'workspace' | 'mission';
+
+export type WorkingStyleSnapshot = {
+  skills: Array<{
+    key: string;
+    label: string;
+    description: string;
+    source: UserSkillSource;
+    scope: UserSkillScope;
+  }>;
+  projectRules: string[];
+};
+
 export type WorkbenchPin = {
   id: string;
   userId: string;
@@ -169,7 +319,7 @@ export type WorkbenchPin = {
 };
 
 export type Intake = {
-  intentType: 'build' | 'review' | 'research' | 'fix';
+  intentType: 'build' | 'review' | 'research' | 'fix' | 'question';
   summary: string;
   clarity: 'low' | 'medium' | 'high';
   risk: 'low' | 'medium' | 'high';
@@ -203,6 +353,11 @@ export type PlanTask = {
   owner?: string | undefined;
   role?: string | undefined;
   stageId?: string | undefined;
+  // The template stage KIND this task was generated from ('plan' | 'work' |
+  // 'review' …). stageId is the stage's (possibly renamed) id; kind is stable,
+  // so gating logic (e.g. the architect's review check) survives custom
+  // templates that rename their stages.
+  stageKind?: string | undefined;
   requiredCapabilities?: string[] | undefined;
   brief: string;
   deps: string[];
@@ -214,6 +369,16 @@ export type PlanTask = {
   priority?: number | undefined;
   producedFor?: string | undefined;
   fixRound?: number | undefined;
+  // Set on fixer tasks that repair a concrete deliverable (e.g. an HTML page):
+  // the workspace path the corrected output should be written to, and the task
+  // whose artifact gets updated in place so the preview shows the fixed version.
+  repairTargetPath?: string | undefined;
+  repairTargetTaskId?: string | undefined;
+  // Set on fixer tasks derived from a failed PLANNING task (and inherited by
+  // chained fix rounds): the fixer must only re-produce the plan — it is not
+  // allowed to touch source/product files. Implementation stays with the
+  // build stage that runs once the repaired plan is in place.
+  replanOnly?: boolean | undefined;
 };
 
 export type Plan = {
@@ -245,6 +410,10 @@ export type DispatchRecord = {
   // fix attempt, and how many fix rounds had run for that branch.
   producedFor?: string | undefined;
   fixRound?: number | undefined;
+  // Every artifact this task's run produced or edited (transcript + workspace
+  // files) — the per-agent attribution link the conversation UI renders.
+  // Absent on records persisted before this field existed.
+  artifactIds?: string[] | undefined;
 };
 
 export type WorkflowStageRunStatus = 'pending' | 'active' | 'running' | 'done' | 'blocked' | 'failed';
@@ -327,8 +496,18 @@ export type Mission = {
   id: string;
   ownerId: string | null;
   chatId: string | null;
+  // The turn that most recently (re)defined this mission's plan.
   sourceTurnId: string;
+  // Every turn that has contributed to the mission, oldest first. A chat's
+  // follow-up turns continue one mission instead of spawning siblings.
+  // Optional: records created before cross-turn continuity carry only
+  // sourceTurnId.
+  turnIds?: string[];
+  // Standalone missions (question turns) never become — or continue — the
+  // chat's ongoing mission.
+  standalone?: boolean;
   goal: string;
+  workingStyle: WorkingStyleSnapshot;
   status: MissionStatus;
   workflowTemplateId: string;
   workflowTemplateName: string;
@@ -350,6 +529,7 @@ export type LocalTurn = {
   missionId: string;
   workflowTemplateId: string;
   message: string;
+  workingStyle: WorkingStyleSnapshot;
   status: 'pending' | 'done' | 'error';
   createdAt: string;
   provider: string;

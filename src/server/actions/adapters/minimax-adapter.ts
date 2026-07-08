@@ -10,6 +10,7 @@
    them so the artifact is the clean answer, and surface the reasoning length via
    the returned usage for observability.
    ============================================================================ */
+import { isModelProviderConfigured, resolveModelProvider } from '../settings-actions.js';
 
 export type MiniMaxMessage = { role: 'system' | 'user' | 'assistant'; content: string };
 
@@ -28,6 +29,9 @@ export type MiniMaxRunOutput = {
   reasoning?: string | undefined;
   raw: string;
   usage?: Record<string, unknown> | undefined;
+  // 'length' means the output was cut at the token ceiling — callers can issue
+  // a continuation request instead of shipping a truncated deliverable.
+  finishReason?: string | undefined;
 };
 
 export class MiniMaxUnavailableError extends Error {
@@ -50,12 +54,16 @@ export function isMiniMaxAvailable(): boolean {
   return Boolean(process.env.MINIMAX_API_KEY && process.env.MINIMAX_API_KEY.trim());
 }
 
-function baseUrl(): string {
-  return (process.env.MINIMAX_BASE_URL || 'https://api.minimaxi.com/v1').replace(/\/$/, '');
+export function isMiniMaxConfigured(): Promise<boolean> {
+  return isModelProviderConfigured('minimax');
 }
 
 export function miniMaxModel(): string {
   return process.env.MINIMAX_MODEL || 'MiniMax-M3';
+}
+
+export async function resolvedMiniMaxModel(): Promise<string> {
+  return (await resolveModelProvider('minimax')).model || miniMaxModel();
 }
 
 /** Remove <think>…</think> reasoning blocks; return [clean, reasoning]. */
@@ -77,24 +85,30 @@ export function stripThink(content: string): [string, string | undefined] {
  * key is configured, MiniMaxRequestError on a non-2xx / API-level error.
  */
 export async function runOnMiniMax(input: MiniMaxRunInput): Promise<MiniMaxRunOutput> {
-  if (!isMiniMaxAvailable()) {
+  const config = await resolveModelProvider('minimax');
+  if (!config.configured || !config.apiKey) {
     throw new MiniMaxUnavailableError('MINIMAX_API_KEY is not set');
   }
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), input.timeoutMs ?? 120_000);
+  const controller = input.timeoutMs ? new AbortController() : null;
+  const timer = controller && input.timeoutMs
+    ? setTimeout(() => controller.abort(), input.timeoutMs)
+    : null;
   let response: Response;
   try {
-    response = await fetch(`${baseUrl()}/chat/completions`, {
+    const request: RequestInit = {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${process.env.MINIMAX_API_KEY}`,
+        Authorization: `Bearer ${config.apiKey}`,
       },
       body: JSON.stringify({
-        model: miniMaxModel(),
+        model: config.model,
         messages: input.messages,
-        max_tokens: input.maxTokens ?? 8192,
+        // Omit max_tokens unless explicitly configured: the provider's own
+        // ceiling is usually higher than any hardcoded default, and truncation
+        // is handled by continuation upstream.
+        ...(input.maxTokens !== undefined ? { max_tokens: input.maxTokens } : {}),
         temperature: input.temperature ?? 0.7,
         stream: false,
         // Default to no reasoning so the deliverable comes back clean and fast;
@@ -102,17 +116,18 @@ export async function runOnMiniMax(input: MiniMaxRunInput): Promise<MiniMaxRunOu
         thinking: { type: input.thinking ? 'adaptive' : 'disabled' },
         reasoning_split: true,
       }),
-      signal: controller.signal,
-    });
+    };
+    if (controller) request.signal = controller.signal;
+    response = await fetch(`${config.baseUrl.replace(/\/$/, '')}/chat/completions`, request);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new MiniMaxRequestError(`minimax_network_error: ${message}`);
   } finally {
-    clearTimeout(timer);
+    if (timer) clearTimeout(timer);
   }
 
   const data = (await response.json()) as {
-    choices?: Array<{ message?: { content?: string } }>;
+    choices?: Array<{ message?: { content?: string }; finish_reason?: string }>;
     usage?: Record<string, unknown>;
     base_resp?: { status_code?: number; status_msg?: string };
     error?: { message?: string };
@@ -128,7 +143,8 @@ export async function runOnMiniMax(input: MiniMaxRunInput): Promise<MiniMaxRunOu
     );
   }
 
-  const raw = data.choices?.[0]?.message?.content ?? '';
+  const choice = data.choices?.[0];
+  const raw = choice?.message?.content ?? '';
   const [text, reasoning] = stripThink(raw);
-  return { text: text || raw, reasoning, raw, usage: data.usage };
+  return { text: text || raw, reasoning, raw, usage: data.usage, finishReason: choice?.finish_reason };
 }

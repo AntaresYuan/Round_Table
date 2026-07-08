@@ -283,7 +283,7 @@ function LogoMark({ size = 26 }) {
   );
 }
 
-function ConversationRail({ workbench, workbenches, tasks, agents, activeId, onPick, onDelete, memberIds, onRemoveMember, onAddMember, onNewTask, onNewWorkbench, onPickWorkbench, onCollapse }) {
+function ConversationRail({ workbench, workbenches, tasks, agents, activeId, onPick, onDelete, memberIds, onRemoveMember, onAddMember, onNewTask, onNewWorkbench, onPickWorkbench, onCollapse, authStatus, user, onOpenProfile, onSignIn }) {
   const dot = { live: 'var(--run)', done: 'var(--ok)', queued: 'var(--warn)', idle: 'var(--text-faint)' };
   const taskMeta = (meta) => {
     if (!meta) return '';
@@ -292,6 +292,21 @@ function ConversationRail({ workbench, workbenches, tasks, agents, activeId, onP
   };
   const [wbMenu, setWbMenu] = useState(false);
   const members = (memberIds || workbench?.members || []).map((id) => agents[id]).filter(Boolean);
+  const signedIn = authStatus === 'authenticated';
+  const accountTitle = authStatus === 'loading'
+    ? 'Checking account'
+    : signedIn
+      ? (user?.name || user?.email || 'You')
+      : 'You';
+  const accountSubtitle = authStatus === 'loading'
+    ? 'Loading account'
+    : signedIn
+      ? (user?.email || 'Profile and preferences')
+      : 'Sign in to save profile';
+  const openAccount = () => {
+    if (signedIn) onOpenProfile && onOpenProfile();
+    else onSignIn && onSignIn();
+  };
   return (
     <div style={{ width: 256, flexShrink: 0, background: 'var(--surface)', borderRight: '1px solid var(--border)',
       display: 'flex', flexDirection: 'column', height: '100%' }}>
@@ -398,15 +413,23 @@ function ConversationRail({ workbench, workbenches, tasks, agents, activeId, onP
         })}
       </div>
 
-      <div style={{ padding: '12px 16px', borderTop: '1px solid var(--border)', display: 'flex',
-        alignItems: 'center', gap: 10 }}>
-        <Avatar agent={{ id: 'you-user', displayName: 'You', color: '#8076a0' }} size={28} />
-        <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 12.5, fontWeight: 500 }}>You</div>
-          <div style={{ fontSize: 11, color: 'var(--text-faint)' }}>Building, not coding</div>
+      <button onClick={openAccount} title={signedIn ? 'Open profile' : 'Sign in'}
+        style={{ padding: '12px 16px', borderTop: '1px solid var(--border)', borderLeft: 'none', borderRight: 'none',
+          borderBottom: 'none', display: 'flex', alignItems: 'center', gap: 10, background: 'transparent',
+          color: 'var(--text)', font: 'inherit', textAlign: 'left', cursor: 'pointer' }}
+        onMouseEnter={(event) => { event.currentTarget.style.background = 'var(--surface-2)'; }}
+        onMouseLeave={(event) => { event.currentTarget.style.background = 'transparent'; }}>
+        <Avatar agent={{ id: 'you-user', displayName: accountTitle, color: '#8076a0' }} size={28} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 12.5, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {accountTitle}
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--text-faint)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {accountSubtitle}
+          </div>
         </div>
-        <Icon name="search" size={15} style={{ color: 'var(--text-faint)' }} />
-      </div>
+        <Icon name="chevron" size={14} style={{ color: 'var(--text-faint)' }} />
+      </button>
     </div>
   );
 }

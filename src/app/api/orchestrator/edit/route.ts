@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { editTurnDelivery } from '@/server/actions/turn-actions';
-import { jsonError } from '@/server/route-utils';
+import { jsonError, requireProductionActor } from '@/server/route-utils';
 
 const BodySchema = z.object({
   turnId: z.string().min(1),
@@ -10,7 +10,8 @@ const BodySchema = z.object({
 export async function POST(req: Request) {
   try {
     const body = BodySchema.parse(await req.json());
-    return Response.json(await editTurnDelivery(body));
+    const actor = await requireProductionActor();
+    return Response.json(await editTurnDelivery({ ...body, actor }));
   } catch (error) {
     return jsonError(error);
   }

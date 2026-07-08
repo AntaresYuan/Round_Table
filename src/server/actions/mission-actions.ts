@@ -14,13 +14,14 @@ import type {
   PlanTask,
   QualityGate,
   QualityGateKind,
+  WorkingStyleSnapshot,
   WorkflowRun,
   WorkflowStage,
   WorkflowStageRunStatus,
   WorkflowTemplate,
   AgentRole,
 } from '../types.js';
-import { agentCardFor, agentForTask } from './agent-roster.js';
+import { AGENT_ROSTER, agentCardFor, agentForTask } from './agent-roster.js';
 
 const seat = (role: AgentRole, agentId?: string) => ({
   ref: { kind: 'role' as const, role, ...(agentId ? { agentId } : {}) },
@@ -101,12 +102,13 @@ export const BUILTIN_WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
         name: 'Review',
         icon: 'eye',
         kind: 'review',
-        desc: 'Reviewer checks requirement coverage, tests, risks, and confidence.',
-        seats: [seat('reviewer', 'vera')],
+        desc: 'Reviewer checks requirement coverage; the architect audits modularity, hardcoding, and reuse.',
+        seats: [seat('reviewer', 'vera'), seat('architect', 'nova')],
+        parallelGroup: 'review',
         gate: gate('reviewer_signoff', 'Reviewer confidence', 'Final delivery is blocked until the reviewer reports pass/warn/block.', ['request_repair', 'accept_review']),
         requiredInputs: ['build artifacts'],
-        expectedOutputs: ['review artifact', 'risk list', 'confidence recommendation'],
-        requiredCapabilities: ['review.quality_gate', 'risk.assessment'],
+        expectedOutputs: ['review artifact', 'architecture check', 'risk list', 'confidence recommendation'],
+        requiredCapabilities: ['review.quality_gate', 'risk.assessment', 'architecture.review'],
       },
       {
         id: 'repair',
@@ -186,12 +188,13 @@ export const BUILTIN_WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
         name: 'Verify',
         icon: 'eye',
         kind: 'review',
-        desc: 'Reviewer checks the repro path, tests, and regression risk.',
-        seats: [seat('reviewer', 'vera')],
+        desc: 'Reviewer checks the repro path and regression risk; the architect confirms the patch stays modular.',
+        seats: [seat('reviewer', 'vera'), seat('architect', 'nova')],
+        parallelGroup: 'review',
         gate: gate('reviewer_signoff', 'Verification sign-off', 'A reviewer must confirm the fix before delivery.', ['request_repair', 'accept_review']),
         requiredInputs: ['patch artifact'],
-        expectedOutputs: ['verification report'],
-        requiredCapabilities: ['review.quality_gate', 'test_evidence'],
+        expectedOutputs: ['verification report', 'architecture check'],
+        requiredCapabilities: ['review.quality_gate', 'test_evidence', 'architecture.review'],
       },
       {
         id: 'ship',
@@ -277,81 +280,225 @@ export type CreateMissionInput = {
   turnId: string;
   missionId?: string | undefined;
   goal: string;
+  workingStyle?: WorkingStyleSnapshot | undefined;
   plan: Plan;
   needsClarification: boolean;
   workflowTemplateId?: string | undefined;
+  // The already-resolved template (custom-aware). When present it wins over
+  // id-based resolution, so custom templates flow through without a re-read.
+  template?: WorkflowTemplate | undefined;
+  // Standalone missions (question turns) are never continued by follow-up
+  // turns and never picked up as the chat's ongoing mission.
+  standalone?: boolean | undefined;
 };
 
-export function listWorkflowTemplates(): WorkflowTemplate[] {
-  return BUILTIN_WORKFLOW_TEMPLATES.map(cloneTemplate);
+export async function listWorkflowTemplates(): Promise<WorkflowTemplate[]> {
+  const custom = await customWorkflowTemplates();
+  // A custom template overrides the builtin with the same id; novel ids are
+  // appended as additional selectable workflows.
+  const overridden = BUILTIN_WORKFLOW_TEMPLATES.map((builtin) =>
+    custom.find((template) => template.id === builtin.id) ?? builtin,
+  );
+  const extra = custom.filter((template) => !BUILTIN_WORKFLOW_TEMPLATES.some((builtin) => builtin.id === template.id));
+  return [...overridden, ...extra].map(cloneTemplate);
 }
 
-export function workflowTemplateById(idValue: string | null | undefined): WorkflowTemplate {
+export function workflowTemplateById(
+  idValue: string | null | undefined,
+  custom: WorkflowTemplate[] = [],
+): WorkflowTemplate {
   return cloneTemplate(
-    BUILTIN_WORKFLOW_TEMPLATES.find((template) => template.id === idValue)
+    custom.find((template) => template.id === idValue)
+      ?? BUILTIN_WORKFLOW_TEMPLATES.find((template) => template.id === idValue)
+      ?? custom.find((template) => template.id === BUILTIN_WORKFLOW_TEMPLATES[0]!.id)
       ?? BUILTIN_WORKFLOW_TEMPLATES[0]!,
   );
 }
 
-export function selectWorkflowTemplate(message: string): WorkflowTemplate {
+export function selectWorkflowTemplate(message: string, custom: WorkflowTemplate[] = []): WorkflowTemplate {
   const lower = message.toLowerCase();
-  if (/\b(bug|fix|error|crash|broken|regression|修复|报错|故障|bug)\b/i.test(lower)) {
-    return workflowTemplateById('wf-bug-fixer');
+  if (/\b(bug|fix|error|crash|broken|regression)\b/i.test(lower) || /(修复|报错|故障)/.test(lower)) {
+    return workflowTemplateById('wf-bug-fixer', custom);
   }
-  if (/\b(onboard|understand|architecture|map|learn|熟悉|理解|架构|代码库|导览)\b/i.test(lower)) {
-    return workflowTemplateById('wf-codebase-onboarding');
+  if (/\b(onboard|understand|architecture|map|learn)\b/i.test(lower) || /(熟悉|理解|架构|代码库|导览)/.test(lower)) {
+    return workflowTemplateById('wf-codebase-onboarding', custom);
   }
-  return workflowTemplateById('wf-feature-builder');
+  return workflowTemplateById('wf-feature-builder', custom);
+}
+
+// The custom-aware async resolver used by turn creation: an explicit id wins,
+// else keyword auto-select — in both cases a stored custom template with the
+// matching id replaces the builtin, so editing the default workflow changes
+// what actually runs.
+export async function resolveWorkflowTemplate(
+  idValue: string | null | undefined,
+  message: string,
+): Promise<WorkflowTemplate> {
+  const custom = await customWorkflowTemplates();
+  return idValue ? workflowTemplateById(idValue, custom) : selectWorkflowTemplate(message, custom);
+}
+
+async function customWorkflowTemplates(): Promise<WorkflowTemplate[]> {
+  const data = await readData();
+  return data.settings.workflowTemplates ?? [];
+}
+
+const TASK_STAGE_KINDS = new Set(['plan', 'work', 'review']);
+
+export class WorkflowTemplateError extends Error {
+  status: number;
+  constructor(message: string, status = 400) {
+    super(message);
+    this.status = status;
+  }
+}
+
+// Persist a user-edited workflow template. Same-id-as-builtin = override; new
+// id = additional workflow. Validation is structural: the editor UI owns
+// cosmetics, but a template that cannot produce a runnable task DAG (no
+// plan/work/review stage, or a seat pointing at an unknown agent) is rejected
+// here so the orchestrator never trips over it at mission time.
+export async function saveWorkflowTemplate(template: WorkflowTemplate): Promise<WorkflowTemplate> {
+  const idValue = (template.id ?? '').trim();
+  if (!idValue) throw new WorkflowTemplateError('missing_template_id');
+  if (!(template.name ?? '').trim()) throw new WorkflowTemplateError('missing_template_name');
+  if (!Array.isArray(template.stages) || template.stages.length === 0) {
+    throw new WorkflowTemplateError('missing_stages');
+  }
+  const stageIds = new Set<string>();
+  for (const stage of template.stages) {
+    if (!(stage.id ?? '').trim()) throw new WorkflowTemplateError('missing_stage_id');
+    if (stageIds.has(stage.id)) throw new WorkflowTemplateError(`duplicate_stage_id: ${stage.id}`);
+    stageIds.add(stage.id);
+    for (const seatItem of stage.seats ?? []) {
+      if (seatItem.ref.kind !== 'role') continue;
+      const agentId = seatItem.ref.agentId;
+      if (agentId && !AGENT_ROSTER.some((agent) => agent.id === agentId)) {
+        throw new WorkflowTemplateError(`unknown_seat_agent: ${agentId}`);
+      }
+    }
+  }
+  if (!template.stages.some((stage) => TASK_STAGE_KINDS.has(stage.kind))) {
+    throw new WorkflowTemplateError('no_runnable_stage');
+  }
+  if (!template.stages.some(stageCanCreateTask)) {
+    throw new WorkflowTemplateError('no_runnable_agent_seat');
+  }
+  const stored: WorkflowTemplate = {
+    ...cloneTemplate(template),
+    id: idValue,
+    builtin: false,
+    version: (template.version ?? 0) + 1,
+    updatedAt: nowIso(),
+  };
+  await mutateData((data) => {
+    const templates = data.settings.workflowTemplates ?? [];
+    data.settings = {
+      ...data.settings,
+      workflowTemplates: [
+        ...templates.filter((item) => item.id !== stored.id),
+        stored,
+      ],
+      updatedAt: nowIso(),
+    };
+  });
+  return stored;
+}
+
+function stageCanCreateTask(stage: WorkflowStage): boolean {
+  if (!TASK_STAGE_KINDS.has(stage.kind)) return false;
+  return (stage.seats ?? []).some((seatItem) => {
+    const ref = seatItem.ref;
+    if (ref.kind !== 'role') return false;
+    if (ref.agentId) {
+      return AGENT_ROSTER.some((agent) => agent.id === ref.agentId);
+    }
+    return AGENT_ROSTER.some((agent) => agent.role === ref.role);
+  });
+}
+
+// Deleting a custom template removes the override/custom entry; a builtin id
+// falls back to the builtin definition (builtins themselves are immutable).
+export async function deleteWorkflowTemplate(idValue: string): Promise<void> {
+  await mutateData((data) => {
+    const templates = data.settings.workflowTemplates ?? [];
+    data.settings = {
+      ...data.settings,
+      workflowTemplates: templates.filter((item) => item.id !== idValue),
+      updatedAt: nowIso(),
+    };
+  });
 }
 
 export async function createMission(input: CreateMissionInput): Promise<Mission> {
-  const template = input.workflowTemplateId
-    ? workflowTemplateById(input.workflowTemplateId)
-    : selectWorkflowTemplate(input.goal);
-  const now = nowIso();
-  const mission: Mission = {
-    id: input.missionId ?? id('mission'),
-    ownerId: input.actor?.id ?? input.ownerId ?? null,
-    chatId: input.chatId ?? null,
-    sourceTurnId: input.turnId,
-    goal: input.goal,
-    status: input.needsClarification ? 'awaiting_clarification' : 'awaiting_approval',
-    workflowTemplateId: template.id,
-    workflowTemplateName: template.name,
-    currentStageId: input.needsClarification ? 'clarify' : 'plan',
-    stages: template.stages.map((stage): MissionStage => ({
-      id: stage.id,
-      name: stage.name,
-      status: stage.id === 'intake' ? 'done' : stage.id === (input.needsClarification ? 'clarify' : 'plan') ? 'active' : 'pending',
-      taskIds: taskIdsForStage(stage.id, input.plan.tasks),
-      artifactIds: [],
-      gate: stage.gate,
-    })),
-    tasks: input.plan.tasks.map((task) => missionTaskFromPlanTask(task, 'pending', [])),
-    checkpoints: checkpointsForTemplate(template, input.needsClarification, now),
-    decisions: [],
-    artifactIds: [],
-    finalDelivery: initialFinalDelivery(),
-    createdAt: now,
-    updatedAt: now,
-  };
-  await mutateData((data) => {
+  const fresh = buildMissionSnapshot(input);
+  const saved = await mutateData((data) => {
+    const existing = data.missions.find((item) => item.id === fresh.id);
+    const mission = existing ? continueMission(existing, fresh, input) : fresh;
     data.missions = [mission, ...data.missions.filter((item) => item.id !== mission.id)];
+    return mission;
   });
-  return mission;
+  return saved ?? fresh;
+}
+
+// A follow-up turn CONTINUES the chat's mission instead of spawning a sibling:
+// the new plan replaces the old one (stages, tasks, checkpoints reset for the
+// new work) while the mission keeps its identity and history — createdAt, the
+// accumulated artifacts, the decision log, and the list of contributing turns.
+function continueMission(existing: Mission, fresh: Mission, input: CreateMissionInput): Mission {
+  const turnIds = existing.turnIds?.length ? existing.turnIds : [existing.sourceTurnId];
+  const followUpId = `decision_followup_${input.turnId}`;
+  const isNewTurn = !turnIds.includes(input.turnId);
+  return {
+    ...fresh,
+    id: existing.id,
+    createdAt: existing.createdAt,
+    turnIds: isNewTurn ? [...turnIds, input.turnId] : turnIds,
+    artifactIds: existing.artifactIds,
+    decisions: isNewTurn && !existing.decisions.some((decision) => decision.id === followUpId)
+      ? [
+          ...existing.decisions,
+          {
+            id: followUpId,
+            stageId: 'intake',
+            actor: 'user' as const,
+            summary: `Follow-up request: ${input.goal.slice(0, 160)}`,
+            createdAt: nowIso(),
+          },
+        ]
+      : existing.decisions,
+  };
+}
+
+// The chat's continuing mission: the most recently updated non-standalone
+// mission in the chat. Question turns are standalone, so they neither hijack
+// nor become the chat's ongoing mission.
+export async function latestMissionForChat(
+  ownerId: string | null,
+  chatId: string | null | undefined,
+): Promise<Mission | null> {
+  if (!chatId) return null;
+  const data = await readData();
+  return data.missions
+    .filter((mission) => mission.chatId === chatId && mission.ownerId === ownerId && !mission.standalone)
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0] ?? null;
 }
 
 export function buildMissionSnapshot(input: CreateMissionInput): Mission {
-  const template = input.workflowTemplateId
-    ? workflowTemplateById(input.workflowTemplateId)
-    : selectWorkflowTemplate(input.goal);
+  const template = input.template
+    ?? (input.workflowTemplateId
+      ? workflowTemplateById(input.workflowTemplateId)
+      : selectWorkflowTemplate(input.goal));
   const now = nowIso();
   return {
     id: input.missionId ?? id('mission'),
     ownerId: input.actor?.id ?? input.ownerId ?? null,
     chatId: input.chatId ?? null,
     sourceTurnId: input.turnId,
+    turnIds: [input.turnId],
+    ...(input.standalone ? { standalone: true } : {}),
     goal: input.goal,
+    workingStyle: input.workingStyle ?? { skills: [], projectRules: [] },
     status: input.needsClarification ? 'awaiting_clarification' : 'awaiting_approval',
     workflowTemplateId: template.id,
     workflowTemplateName: template.name,
@@ -381,7 +528,18 @@ export async function getMission(actor: Actor, missionId: string): Promise<Missi
 
 export async function getMissionByTurn(actor: Actor, turnId: string): Promise<Mission | null> {
   const data = await readData();
-  return data.missions.find((mission) => mission.ownerId === actor.id && mission.sourceTurnId === turnId) ?? null;
+  // A mission can span several turns, so resolve through the turn's own
+  // missionId first; the sourceTurnId/turnIds fallbacks cover older records.
+  const missionId = data.turns.find((turn) => turn.id === turnId && turn.ownerId === actor.id)?.missionId;
+  const byId = missionId
+    ? data.missions.find((mission) => mission.ownerId === actor.id && mission.id === missionId)
+    : null;
+  return byId
+    ?? data.missions.find((mission) =>
+      mission.ownerId === actor.id
+      && (mission.sourceTurnId === turnId || (mission.turnIds ?? []).includes(turnId)),
+    )
+    ?? null;
 }
 
 export async function listMissions(actor: Actor, chatId?: string | undefined): Promise<Mission[]> {
@@ -550,9 +708,20 @@ export async function decideFinalDelivery(
 }
 
 export function workflowRunForTurn(turn: LocalTurn): WorkflowRun {
-  const template = workflowTemplateById(turn.workflowTemplateId);
+  const template = templateFromTurn(turn);
   const mission = turn.mission ?? missionFromTurnSnapshot(turn, template);
   return workflowRunFromMission(mission, template);
+}
+
+// The turn stores the resolved template snapshot at creation time (turn.workflow),
+// which is the ONLY sync-safe way to honor custom templates here — id-based
+// resolution alone would silently fall back to the builtin.
+function templateFromTurn(turn: LocalTurn): WorkflowTemplate {
+  const snapshot = turn.workflow as WorkflowTemplate | null;
+  if (snapshot && Array.isArray(snapshot.stages) && snapshot.stages.length > 0) {
+    return cloneTemplate(snapshot);
+  }
+  return workflowTemplateById(turn.workflowTemplateId);
 }
 
 export function workflowRunFromMission(mission: Mission, template: WorkflowTemplate): WorkflowRun {
@@ -658,7 +827,7 @@ function syncMissionWithTurn(
   opts: { artifactIds: string[] },
 ): Mission {
   const now = nowIso();
-  const template = workflowTemplateById(turn.workflowTemplateId);
+  const template = templateFromTurn(turn);
   const recordByTask = new Map(turn.dispatch.map((record) => [record.taskId, record]));
   const artifactByTask = new Map<string, string[]>();
   for (const artifact of turn.artifacts) {
@@ -725,7 +894,9 @@ function missionFromTurnSnapshot(turn: LocalTurn, template: WorkflowTemplate): M
     ownerId: turn.ownerId,
     chatId: turn.localChatId,
     sourceTurnId: turn.id,
+    turnIds: [turn.id],
     goal: turn.message,
+    workingStyle: turn.workingStyle ?? { skills: [], projectRules: [] },
     status: missionStatusFromTurn(turn, []),
     workflowTemplateId: template.id,
     workflowTemplateName: template.name,
@@ -876,8 +1047,10 @@ function updateDecisions(
 
 function finalDeliveryForTurn(turn: LocalTurn): MissionFinalDelivery {
   if (turn.dispatchStatus !== 'completed') return initialFinalDelivery();
-  const reportArtifact = turn.artifacts.find((artifact) => artifact.id === `final_report_${turn.id}`);
-  const summaryArtifact = turn.artifacts.find((artifact) => artifact.id === `review_summary_${turn.id}`);
+  // Report artifacts are scoped to the chat when one exists (so follow-up turns
+  // replace them) and to the turn otherwise — match by prefix, not exact id.
+  const reportArtifact = turn.artifacts.find((artifact) => artifact.id.startsWith('final_report_'));
+  const summaryArtifact = turn.artifacts.find((artifact) => artifact.id.startsWith('review_summary_'));
   const summary = parseReviewSummary(summaryArtifact?.preview);
   const reviewArtifact = turn.artifacts.find((artifact) => artifact.ownerAgentId === 'vera' || artifact.ownerAgentId === 'reviewer');
   const reportText = reportArtifact?.preview ?? '';

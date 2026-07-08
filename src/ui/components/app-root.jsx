@@ -6,16 +6,18 @@
 
 import React from 'react';
 import { RT } from '../lib/rt';
-import { Avatar, Icon, Spinner, tint, alpha } from './primitives';
+import { Avatar, Icon, Spinner, Md, tint, alpha } from './primitives';
 import { iconBtn } from './cards';
 import { ConversationRail, LogoMark } from './chat';
 import { RoundtableScene, WhiteboardZoom, sceneAt } from './roundtable';
 import { WorkflowView } from './workflow';
 import { Modal, NewTaskModal, NewWorkbenchModal, AddAgentModal } from './modals';
 import { TopBar, recommendWorkflow, Dock } from './stage-scene';
+import { LiveTranscriptFeed } from './live-turn';
 import { Drawer, InspectorPanel } from './inspector';
 import { latestLiveTurn, buildLocalScene } from '../lib/live-scene';
-import { useSession } from 'next-auth/react';
+import { withBundledPreview } from '../lib/preview-html';
+import { signOut, useSession } from 'next-auth/react';
 import { trpc } from '@/ui/lib/trpc';
 
 const { useState, useEffect, useMemo, useRef, useCallback } = React;
@@ -152,6 +154,7 @@ function storedTurnToLiveTurn(turn) {
             needsClarification: turn.needsClarification,
             clarifyQuestions: turn.clarifyQuestions,
             clarifyAnswers: turn.clarifyAnswers,
+            liveActivity: turn.liveActivity,
           },
         }
       : { error: turn.error || 'orchestrator_turn_failed' }),
@@ -159,12 +162,18 @@ function storedTurnToLiveTurn(turn) {
 }
 
 
-// Don't force an adapter from the client — let the server pick from its
-// ROUNDTABLE_AGENT_ADAPTER env (openai-compat / minimax / e2b / local-dispatch).
-// Forcing 'local-dispatch' here was overriding the real-model adapter and
-// producing template stubs.
+// Don't force an adapter from the client. The server resolves settings/env first,
+// then configured model APIs, and only falls back to local-dispatch.
+// Forcing 'local-dispatch' here was overriding real-model adapters and producing
+// template stubs.
 function preferredAgentAdapterRequest() {
   return {};
+}
+
+function randomClientId(prefix) {
+  const uuid = globalThis.crypto?.randomUUID?.().replace(/-/g, '');
+  const fallback = `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
+  return `${prefix}-${(uuid || fallback).slice(0, 16)}`;
 }
 
 // #15 AC: agent color persistence across sessions. Custom agents (id `a-…`)
@@ -191,10 +200,17 @@ function restoreCustomAgents() {
 
 
 /* ---- Breakout room (a real side room you can sit in) --------------------- */
-function BreakoutModal({ data, agents, onClose, onBringBack }) {
+function BreakoutModal({ data, agents, onClose, onBringBack, onSend, sending }) {
   if (!data) return null;
   const [val, setVal] = useState('');
   const a = agents[data.a], b = agents[data.b];
+  const canSend = typeof onSend === 'function';
+  const submit = () => {
+    const text = val.trim();
+    if (!text) return;
+    if (canSend) onSend(text);
+    setVal('');
+  };
   return (
     <div onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 115, background: alpha('#000', 38),
       backdropFilter: 'blur(3px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
@@ -217,30 +233,51 @@ function BreakoutModal({ data, agents, onClose, onBringBack }) {
         </div>
         <div style={{ flex: 1, overflowY: 'auto', padding: '16px', display: 'flex', flexDirection: 'column', gap: 14, background: 'var(--bg)' }}>
           {data.transcript.map((t, i) => {
+            if (t.isUser) {
+              return (
+                <div key={i} style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                  <div style={{ maxWidth: '80%', background: 'var(--accent)', color: '#fff', borderRadius: '12px 4px 12px 12px',
+                    padding: '9px 12px', fontSize: 13.5, lineHeight: 1.5 }}>{t.text}</div>
+                </div>
+              );
+            }
             const ag = agents[t.agentId];
             return (
               <div key={i} style={{ display: 'flex', gap: 10 }}>
                 <Avatar agent={ag} size={28} />
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 12, color: ag.color, fontWeight: 600, marginBottom: 2 }}>{ag.displayName}</div>
+                  <div style={{ fontSize: 12, color: ag?.color, fontWeight: 600, marginBottom: 2 }}>{ag?.displayName || t.agentId}</div>
                   <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '4px 12px 12px 12px',
                     padding: '9px 12px', fontSize: 13.5, color: 'var(--text)', lineHeight: 1.5 }}>{t.text}</div>
                 </div>
               </div>
             );
           })}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, alignSelf: 'center', fontSize: 11.5, color: 'var(--text-faint)',
-            padding: '4px 12px', borderRadius: 999, background: 'var(--surface-2)' }}>
-            <Icon name="check" size={12} style={{ color: 'var(--ok)' }} /> aligned — outcome ready to share
-          </div>
+          {sending && (
+            <div style={{ display: 'flex', gap: 10 }}>
+              <Avatar agent={a} size={28} />
+              <div style={{ flex: 1 }}>
+                <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '4px 12px 12px 12px',
+                  padding: '9px 12px', fontSize: 13.5, color: 'var(--text-faint)', lineHeight: 1.5, fontStyle: 'italic' }}>thinking…</div>
+              </div>
+            </div>
+          )}
+          {!sending && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, alignSelf: 'center', fontSize: 11.5, color: 'var(--text-faint)',
+              padding: '4px 12px', borderRadius: 999, background: 'var(--surface-2)' }}>
+              <Icon name="check" size={12} style={{ color: 'var(--ok)' }} /> aligned — outcome ready to share
+            </div>
+          )}
         </div>
         <div style={{ padding: '11px 14px', borderTop: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 10 }}>
           <div style={{ display: 'flex', alignItems: 'flex-end', gap: 9 }}>
             <textarea value={val} onChange={(e) => setVal(e.target.value)} rows={1} placeholder="Join in — add a note to the room…"
+              onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); } }}
               style={{ flex: 1, resize: 'none', border: '1px solid var(--border)', borderRadius: 'var(--r-sm)', background: 'var(--surface-2)',
                 font: 'inherit', fontSize: 13.5, color: 'var(--text)', padding: '9px 11px', outline: 'none', maxHeight: 90 }} />
-            <button onClick={() => setVal('')} style={{ display: 'grid', placeItems: 'center', width: 38, height: 38, borderRadius: 'var(--r-sm)',
-              border: 'none', cursor: 'pointer', background: 'var(--surface-3)', color: 'var(--text-muted)', flexShrink: 0 }}><Icon name="send" size={16} /></button>
+            <button onClick={submit} disabled={!val.trim() || sending} style={{ display: 'grid', placeItems: 'center', width: 38, height: 38, borderRadius: 'var(--r-sm)',
+              border: 'none', cursor: (!val.trim() || sending) ? 'default' : 'pointer', background: 'var(--surface-3)',
+              color: 'var(--text-muted)', flexShrink: 0, opacity: (!val.trim() || sending) ? 0.5 : 1 }}><Icon name="send" size={16} /></button>
           </div>
           <button onClick={() => { onBringBack && onBringBack(); onClose(); }} style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
             gap: 7, padding: '10px', borderRadius: 'var(--r-sm)', border: 'none', cursor: 'pointer', background: 'var(--accent)', color: '#fff',
@@ -300,59 +337,212 @@ function BreakoutsHub({ agents, memberIds, autoRoom, onEnterAuto, onStartDM, onC
   );
 }
 
-/* ---- DMRoom : a private 1:1 side room (You ↔ agent), doubles as steering -- */
-function DMRoom({ agent, activeTask, onClose }) {
+/* ---- agentWorkFor : collect one agent's tasks + produced artifacts from the
+   latest run, so DMRoom's "Work" tab shows what they actually did (not a mock).
+   Owner match is by agentId on both the plan task and the artifact. -------- */
+function agentWorkFor(agentId, turnResult) {
+  if (!agentId || !turnResult) return { tasks: [], artifacts: [], adapter: null };
+  const tasks = (turnResult.plan?.tasks || []).filter((task) => task.owner === agentId);
+  const ownedTaskIds = new Set(tasks.map((task) => task.id));
+  const records = new Map((turnResult.dispatch || []).map((rec) => [rec.taskId, rec]));
+  const artifacts = (turnResult.artifacts || []).filter((art) =>
+    art.ownerAgentId === agentId
+    || [...ownedTaskIds].some((taskId) => art.id.startsWith(`${taskId}_`)),
+  );
+  return {
+    // Dispatch records are the final per-task truth but only land at end of
+    // run; while the agent works, liveActivity carries status + the streaming
+    // runtime transcript, so the Work tab can show the process, not a title.
+    tasks: tasks.map((task) => {
+      const activity = turnResult.liveActivity?.[task.id] || null;
+      return {
+        ...task,
+        activity,
+        status: records.get(task.id)?.status || activity?.status || 'pending',
+      };
+    }),
+    artifacts,
+    adapter: turnResult.dispatchAdapter || null,
+  };
+}
+
+const DM_WORK_STATUS = {
+  completed: { label: 'done', color: 'var(--ok)' },
+  failed: { label: 'failed', color: 'var(--bad)' },
+  blocked: { label: 'blocked', color: 'var(--warn)' },
+  running: { label: 'working', color: 'var(--run)' },
+  stopped: { label: 'stopped', color: 'var(--text-faint)' },
+  pending: { label: 'queued', color: 'var(--text-faint)' },
+};
+
+// The "Work" tab: this agent's task(s) and the deliverables they produced, each
+// expandable to read the real content (HTML renders in an iframe, text as md).
+function DMWorkPanel({ agent, work }) {
+  const { tasks, artifacts, adapter } = work;
+  if (tasks.length === 0 && artifacts.length === 0) {
+    return (
+      <div style={{ fontSize: 12.5, color: 'var(--text-faint)', fontStyle: 'italic', padding: '4px 2px' }}>
+        {agent.displayName} hasn’t produced anything on this run yet.
+      </div>
+    );
+  }
+  return (
+    <div style={{ display: 'grid', gap: 12 }}>
+      {tasks.length > 0 && (
+        <div style={{ display: 'grid', gap: 6 }}>
+          {tasks.map((task) => {
+            const st = DM_WORK_STATUS[task.status] || DM_WORK_STATUS.pending;
+            return (
+              <div key={task.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '8px 10px',
+                borderRadius: 'var(--r-sm)', background: 'var(--surface)', border: '1px solid var(--border)' }}>
+                <span style={{ marginTop: 2, width: 8, height: 8, borderRadius: '50%', background: st.color, flexShrink: 0 }} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text)' }}>{task.title}</div>
+                  <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginTop: 5 }}>
+                    {/* The live feed header below already names the runtime. */}
+                    {!task.activity && adapter && <MetaChip label={`via ${adapter}`} />}
+                    {(task.deps || []).map((dep) => <MetaChip key={dep} label={`input ${dep}`} />)}
+                  </div>
+                  {/* Once the runtime is streaming, the live transcript IS the
+                      story of this task — the static brief only matters before
+                      there is anything real to show. */}
+                  {task.activity
+                    ? <div style={{ marginTop: 7 }}>
+                        <LiveTranscriptFeed activity={task.activity} agents={{ [agent.id]: agent, orchestrator: agent }} compact />
+                      </div>
+                    : task.brief && <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 2 }}>{task.brief}</div>}
+                </div>
+                <span style={{ fontSize: 10.5, fontWeight: 700, color: st.color }}>{st.label}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {artifacts.length > 0 && (
+        <div style={{ display: 'grid', gap: 6 }}>
+          <div style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '.05em', textTransform: 'uppercase',
+            color: 'var(--text-faint)' }}>Deliverables</div>
+          {artifacts.map((art) => <DMArtifact key={`${art.id}-${art.version}`} artifact={art} agent={agent} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MetaChip({ label }) {
+  return (
+    <span className="mono" style={{ fontSize: 10, color: 'var(--text-faint)', padding: '1px 5px',
+      borderRadius: 5, border: '1px solid var(--border)', background: 'var(--surface-2)' }}>{label}</span>
+  );
+}
+
+function DMArtifact({ artifact, agent }) {
+  const [open, setOpen] = useState(false);
+  const content = artifact.preview || artifact.code || '';
+  const isHtml = artifact.kind === 'html' || artifact.kind === 'preview';
+  return (
+    <div style={{ borderRadius: 'var(--r-sm)', background: tint(agent.color, 7),
+      border: `1px solid ${alpha(agent.color, 22)}`, overflow: 'hidden' }}>
+      <button onClick={() => setOpen((v) => !v)} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 8,
+        padding: '8px 10px', background: 'transparent', border: 'none', cursor: 'pointer', font: 'inherit', textAlign: 'left' }}>
+        <Icon name={open ? 'chevdown' : 'chevron'} size={12} style={{ color: agent.color }} />
+        <Icon name={artifact.kind === 'preview' ? 'eye' : artifact.kind === 'markdown' ? 'clip' : 'code'} size={13}
+          style={{ color: agent.color }} />
+        <span className="mono" style={{ flex: 1, minWidth: 0, fontSize: 12, color: 'var(--text)', overflow: 'hidden',
+          textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{artifact.title}</span>
+      </button>
+      {open && (
+        <div style={{ borderTop: `1px solid ${alpha(agent.color, 22)}`, background: 'var(--bg)', padding: '10px 12px',
+          maxHeight: 300, overflowY: 'auto' }}>
+          {!content
+            ? <div style={{ fontSize: 12, color: 'var(--text-faint)', fontStyle: 'italic' }}>No content captured.</div>
+            : isHtml
+            ? <iframe title={artifact.title} srcDoc={content} sandbox="allow-scripts"
+                style={{ width: '100%', height: 260, border: 'none', background: '#fff', borderRadius: 6 }} />
+            : <div style={{ fontSize: 12.5, lineHeight: 1.5, color: 'var(--text)' }}><Md text={content} /></div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---- DMRoom : click an agent to open their 1:1 room. Two tabs — Chat (steer /
+   private note) and Work (what they actually produced on this run). --------- */
+function DMRoom({ agent, activeTask, work, onClose }) {
   if (!agent) return null;
+  const [tab, setTab] = useState('chat');
   const [val, setVal] = useState('');
   const steering = !!activeTask;
   const redirects = ['Use Postgres, not SQLite', 'Add rate limiting', 'Keep it server-rendered'];
+  const workCount = (work?.tasks?.length || 0) + (work?.artifacts?.length || 0);
+  const tabBtn = (id, label, count) => (
+    <button onClick={() => setTab(id)} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 12px',
+      borderRadius: 999, cursor: 'pointer', font: 'inherit', fontSize: 12, fontWeight: 700,
+      border: '1px solid ' + (tab === id ? alpha(agent.color, 40) : 'var(--border)'),
+      background: tab === id ? tint(agent.color, 12) : 'var(--surface)',
+      color: tab === id ? agent.color : 'var(--text-muted)' }}>
+      {label}
+      {count > 0 && <span style={{ fontSize: 10.5, fontWeight: 800, padding: '0 6px', borderRadius: 999,
+        background: tab === id ? alpha(agent.color, 22) : 'var(--surface-3)', color: tab === id ? agent.color : 'var(--text-faint)' }}>{count}</span>}
+    </button>
+  );
   return (
     <div onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 115, background: alpha('#000', 34),
       backdropFilter: 'blur(2px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
-      <div onClick={(e) => e.stopPropagation()} className="rt-zoom" style={{ width: 'min(460px, 100%)', height: 'min(560px, 86vh)',
+      <div onClick={(e) => e.stopPropagation()} className="rt-zoom" style={{ width: 'min(480px, 100%)', height: 'min(600px, 88vh)',
         display: 'flex', flexDirection: 'column', background: 'var(--surface)', borderRadius: 'var(--r-card)',
         border: '1px solid var(--border)', borderTop: `2.5px solid ${agent.color}`, boxShadow: 'var(--shadow-pop)', overflow: 'hidden' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 15px', borderBottom: '1px solid var(--border)' }}>
-          <span style={{ display: 'grid', placeItems: 'center', width: 24, height: 24, borderRadius: 7, background: 'var(--surface-2)',
-            color: 'var(--text-muted)' }}><Icon name={steering ? 'wrench' : 'door'} size={14} /></span>
           <Avatar agent={agent} size={28} />
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 13.5, fontWeight: 600 }}>{steering ? 'Steer' : 'Private'} · {agent.displayName}</div>
-            <div style={{ fontSize: 11, color: 'var(--text-faint)' }}>{steering ? 'redirect them mid-task' : 'just you two — off the main table'}</div>
+            <div style={{ fontSize: 13.5, fontWeight: 600 }}>{agent.displayName}</div>
+            <div className="mono" style={{ fontSize: 11, color: 'var(--text-faint)' }}>@{agent.role || agent.id}</div>
           </div>
           <button onClick={onClose} style={iconBtn}><Icon name="x" size={15} /></button>
         </div>
-        <div style={{ flex: 1, overflowY: 'auto', padding: '16px 15px', display: 'flex', flexDirection: 'column', gap: 12, background: 'var(--bg)' }}>
-          {steering && (
-            <div style={{ display: 'flex', gap: 9, alignItems: 'flex-start', padding: '10px 12px', borderRadius: 'var(--r-sm)',
-              background: tint(agent.color, 9), border: `1px solid ${alpha(agent.color, 35)}` }}>
-              <Spinner size={15} color={agent.color} />
-              <div style={{ fontSize: 12.5, color: 'var(--text)' }}>
-                <b>Working on {activeTask}</b> right now. A note here steers the live task without stopping the table.</div>
+        <div style={{ display: 'flex', gap: 7, padding: '10px 15px 4px' }}>
+          {tabBtn('chat', steering ? 'Steer' : 'Chat')}
+          {tabBtn('work', 'Work', workCount)}
+        </div>
+        {tab === 'work' ? (
+          <div style={{ flex: 1, overflowY: 'auto', padding: '12px 15px 16px', background: 'var(--bg)' }}>
+            <DMWorkPanel agent={agent} work={work || { tasks: [], artifacts: [] }} />
+          </div>
+        ) : (
+          <>
+            <div style={{ flex: 1, overflowY: 'auto', padding: '16px 15px', display: 'flex', flexDirection: 'column', gap: 12, background: 'var(--bg)' }}>
+              {steering && (
+                <div style={{ display: 'flex', gap: 9, alignItems: 'flex-start', padding: '10px 12px', borderRadius: 'var(--r-sm)',
+                  background: tint(agent.color, 9), border: `1px solid ${alpha(agent.color, 35)}` }}>
+                  <Spinner size={15} color={agent.color} />
+                  <div style={{ fontSize: 12.5, color: 'var(--text)' }}>
+                    <b>Working on {activeTask}</b> right now. A note here steers the live task without stopping the table.</div>
+                </div>
+              )}
+              <div style={{ display: 'flex', gap: 9 }}>
+                <Avatar agent={agent} size={26} />
+                <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '4px 12px 12px 12px',
+                  padding: '9px 12px', fontSize: 13.5, color: 'var(--text)', maxWidth: '80%' }}>
+                  {steering ? 'Mid-build — tell me what to change and I’ll fold it in.' : 'Hey — what would you like to go over, just the two of us?'}</div>
+              </div>
             </div>
-          )}
-          <div style={{ display: 'flex', gap: 9 }}>
-            <Avatar agent={agent} size={26} />
-            <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '4px 12px 12px 12px',
-              padding: '9px 12px', fontSize: 13.5, color: 'var(--text)', maxWidth: '80%' }}>
-              {steering ? 'Mid-build — tell me what to change and I’ll fold it in.' : 'Hey — what would you like to go over, just the two of us?'}</div>
-          </div>
-        </div>
-        {steering && (
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', padding: '0 13px 4px' }}>
-            {redirects.map((r) => (
-              <button key={r} onClick={() => setVal(r)} style={{ padding: '5px 10px', borderRadius: 999, cursor: 'pointer',
-                border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-muted)', font: 'inherit', fontSize: 11.5 }}>{r}</button>
-            ))}
-          </div>
+            {steering && (
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', padding: '0 13px 4px' }}>
+                {redirects.map((r) => (
+                  <button key={r} onClick={() => setVal(r)} style={{ padding: '5px 10px', borderRadius: 999, cursor: 'pointer',
+                    border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-muted)', font: 'inherit', fontSize: 11.5 }}>{r}</button>
+                ))}
+              </div>
+            )}
+            <div style={{ display: 'flex', alignItems: 'flex-end', gap: 9, padding: '11px 13px', borderTop: '1px solid var(--border)' }}>
+              <textarea value={val} onChange={(e) => setVal(e.target.value)} rows={1} placeholder={steering ? `Redirect ${agent.displayName}…` : `Message ${agent.displayName} privately…`}
+                style={{ flex: 1, resize: 'none', border: '1px solid var(--border)', borderRadius: 'var(--r-sm)', background: 'var(--surface-2)',
+                  font: 'inherit', fontSize: 13.5, color: 'var(--text)', padding: '9px 11px', outline: 'none', maxHeight: 100 }} />
+              <button onClick={() => setVal('')} style={{ display: 'grid', placeItems: 'center', width: 38, height: 38, borderRadius: 'var(--r-sm)',
+                border: 'none', cursor: 'pointer', background: 'var(--accent)', color: '#fff', flexShrink: 0 }}><Icon name="send" size={16} /></button>
+            </div>
+          </>
         )}
-        <div style={{ display: 'flex', alignItems: 'flex-end', gap: 9, padding: '11px 13px', borderTop: '1px solid var(--border)' }}>
-          <textarea value={val} onChange={(e) => setVal(e.target.value)} rows={1} placeholder={steering ? `Redirect ${agent.displayName}…` : `Message ${agent.displayName} privately…`}
-            style={{ flex: 1, resize: 'none', border: '1px solid var(--border)', borderRadius: 'var(--r-sm)', background: 'var(--surface-2)',
-              font: 'inherit', fontSize: 13.5, color: 'var(--text)', padding: '9px 11px', outline: 'none', maxHeight: 100 }} />
-          <button onClick={() => setVal('')} style={{ display: 'grid', placeItems: 'center', width: 38, height: 38, borderRadius: 'var(--r-sm)',
-            border: 'none', cursor: 'pointer', background: 'var(--accent)', color: '#fff', flexShrink: 0 }}><Icon name="send" size={16} /></button>
-        </div>
       </div>
     </div>
   );
@@ -445,23 +635,34 @@ function App() {
   const [localFollowUps, setLocalFollowUps] = useState({});
   const [localStatus, setLocalStatus] = useState('idle');
   // Persisted so a page refresh restores this chat's live turns from history
-  // instead of starting an empty session. Some embedded browsers can deny
-  // localStorage, so use a stable dev fallback instead of a fresh random id.
+  // instead of starting an empty session.
   const [localChatId] = useState(() => {
     const key = 'roundtable.localChatId';
-    const fallback = 'roundtable-local-dev';
     try {
       const existing = window.localStorage.getItem(key);
       if (existing) return existing;
-      window.localStorage.setItem(key, fallback);
-      return fallback;
+      const next = randomClientId('roundtable-local');
+      window.localStorage.setItem(key, next);
+      return next;
     } catch {
-      return fallback;
+      return randomClientId('roundtable-local');
     }
   });
   // P3.2: live chats when signed in; fall back to fixtures for the logged-out demo.
-  const { status: authStatus } = useSession();
+  const { data: session, status: authStatus } = useSession();
   const authed = authStatus === 'authenticated';
+  const handleSignIn = useCallback(() => {
+    window.location.assign(`/signin?callbackUrl=${encodeURIComponent(window.location.href)}`);
+  }, []);
+  const handleSignUp = useCallback(() => {
+    window.location.assign(`/signup?callbackUrl=${encodeURIComponent(window.location.href)}`);
+  }, []);
+  const handleOpenProfile = useCallback(() => {
+    window.location.assign('/profile');
+  }, []);
+  const handleSignOut = useCallback(() => {
+    void signOut({ callbackUrl: window.location.href });
+  }, []);
   const chatsQ = trpc.chats.list.useQuery(undefined, { enabled: authed });
   const workbenchesQ = trpc.workbenches.list.useQuery(undefined, { enabled: authed });
   const [selectedChatId, setSelectedChatId] = useState(null);
@@ -482,12 +683,47 @@ function App() {
     onSuccess: () => trpcUtils.messages.list.invalidate(),
   });
   const polishPrompt = trpc.ai.polish.useMutation();
+  // Workflow templates are the orchestrator's source of truth for the default
+  // task chain — the editor reads and writes these (not a client-only copy).
+  const workflowTemplatesQ = trpc.missions.templates.useQuery(undefined, { enabled: authed });
+  const saveWorkflowTemplate = trpc.missions.saveTemplate.useMutation({
+    onSuccess: () => trpcUtils.missions.templates.invalidate(),
+  });
+  const deleteWorkflowTemplate = trpc.missions.deleteTemplate.useMutation({
+    onSuccess: () => trpcUtils.missions.templates.invalidate(),
+  });
   const deleteChat = trpc.chats.delete.useMutation({
     onSuccess: () => {
       trpcUtils.chats.list.invalidate();
     },
   });
   const liveWorkbenches = workbenchesQ.data ?? [];
+  const seededSignupWorkbench = useRef(false);
+  useEffect(() => {
+    if (!authed || !workbenchesQ.isSuccess || liveWorkbenches.length > 0 || seededSignupWorkbench.current) return;
+    let name = '';
+    try {
+      name = window.localStorage.getItem('roundtable.pendingWorkbenchName')?.trim() || '';
+    } catch {
+      name = '';
+    }
+    if (!name) return;
+
+    seededSignupWorkbench.current = true;
+    createWorkbench.mutate({
+      name,
+      description: 'Created during sign up.',
+    }, {
+      onSuccess: (workbench) => {
+        try { window.localStorage.removeItem('roundtable.pendingWorkbenchName'); } catch {}
+        setSelectedWorkbenchId(workbench.id);
+        setSelectedChatId(null);
+      },
+      onError: () => {
+        seededSignupWorkbench.current = false;
+      },
+    });
+  }, [authed, workbenchesQ.isSuccess, liveWorkbenches.length, createWorkbench]);
   const activeChat =
     authed && chatsQ.data && selectedChatId
       ? chatsQ.data.find((c) => c.id === selectedChatId)
@@ -501,7 +737,10 @@ function App() {
       ? liveWorkbenches.find((w) => w.id === activeWorkbenchId) ?? null
       : null;
   const localTasks = localTurns.map(turnToTask);
-  const activeLocalTurn = !authed && localTurns.length > 0
+  // Turns exist for signed-in users too (loaded per active chat): the selected
+  // one drives the roundtable scene, so the table shows the REAL run — not the
+  // demo script — whenever there is one.
+  const activeLocalTurn = localTurns.length > 0
     ? (localTurns.find((turn) => turn.id === selectedLocalTurnId) || localTurns[0])
     : null;
   const activeLocalTurns = activeLocalTurn ? [activeLocalTurn] : [];
@@ -529,6 +768,60 @@ function App() {
   );
   const liveMessages = authed && messagesQ.data ? messagesQ.data : null;
   const liveHandoffs = authed && handoffsQ.data ? handoffsQ.data : null;
+  const breakoutRoomsQ = trpc.breakouts.listRooms.useQuery(
+    { chatId: activeChatId ?? '' },
+    { enabled: authed && !!activeChatId },
+  );
+  const liveBreakoutRooms = authed && breakoutRoomsQ.data ? breakoutRoomsQ.data : null;
+  const postBreakoutMessage = trpc.breakouts.postMessage.useMutation({
+    onSettled: () => { if (activeChatId) trpcUtils.breakouts.listRooms.invalidate({ chatId: activeChatId }); },
+  });
+  const userProfileQ = trpc.userProfile.get.useQuery(undefined, { enabled: authed });
+  const workbenchPinsQ = trpc.workbenchPinned.list.useQuery(
+    { workbenchId: activeWorkbenchId ?? '' },
+    { enabled: authed && !!activeWorkbenchId },
+  );
+  const saveUserProfile = trpc.userProfile.update.useMutation({
+    onSuccess: () => trpcUtils.userProfile.get.invalidate(),
+  });
+  const addWorkbenchPin = trpc.workbenchPinned.pin.useMutation({
+    onSuccess: () => {
+      if (activeWorkbenchId) trpcUtils.workbenchPinned.list.invalidate({ workbenchId: activeWorkbenchId });
+    },
+  });
+  const removeWorkbenchPin = trpc.workbenchPinned.unpin.useMutation({
+    onSuccess: () => {
+      if (activeWorkbenchId) trpcUtils.workbenchPinned.list.invalidate({ workbenchId: activeWorkbenchId });
+    },
+  });
+  const memoryPanel = useMemo(() => ({
+    live: authed,
+    profile: userProfileQ.data ?? null,
+    pins: workbenchPinsQ.data ?? [],
+    workbench: activeWorkbench,
+    profileSaving: saveUserProfile.isPending,
+    pinSaving: addWorkbenchPin.isPending || removeWorkbenchPin.isPending,
+    profileError: saveUserProfile.error?.message ?? null,
+    pinError: addWorkbenchPin.error?.message || removeWorkbenchPin.error?.message || null,
+    onSaveProfile: (patch) => saveUserProfile.mutate(patch),
+    onAddPin: (content) => {
+      if (!activeWorkbenchId) return;
+      addWorkbenchPin.mutate({ workbenchId: activeWorkbenchId, content });
+    },
+    onRemovePin: (id) => {
+      if (!activeWorkbenchId) return;
+      removeWorkbenchPin.mutate({ workbenchId: activeWorkbenchId, id });
+    },
+  }), [
+    authed,
+    userProfileQ.data,
+    workbenchPinsQ.data,
+    activeWorkbench,
+    activeWorkbenchId,
+    saveUserProfile,
+    addWorkbenchPin,
+    removeWorkbenchPin,
+  ]);
   const agents = useMemo(() => palettize(t.palette), [t.palette, memberIds]);
   const railWorkbench = authed && activeWorkbench
     ? { ...activeWorkbench, members: RT.WORKBENCH.members }
@@ -539,7 +832,7 @@ function App() {
   const scene = useScene(t.autoplay, t.speed);
   const compact = useMediaQuery('(max-width: 760px)');
   const [decided, setDecided] = useState(false);
-  const localLive = !authed && localTurns.length > 0;
+  const localLive = localTurns.length > 0;
   // Workflow recommendation for the active task (local heuristic; no backend on main).
   const activeTaskTitle = localLive
     ? (turnToTask(activeLocalTurn || localTurns[0] || { message: '' }).title ?? '')
@@ -573,14 +866,23 @@ function App() {
   // The finished, renderable site for the active run (if any): a preview artifact
   // with HTML content. Drives the center-stage "Preview" toggle.
   const centerPreviewArtifact = useMemo(() => {
-    const fromTurn = activeLocalTurn?.result?.artifacts?.find(
+    // Prefer the homepage over whatever page happens to sit first in the array —
+    // mirrors the backend's `primary` pick in artifactsFromRun.
+    const indexFirst = (list, match) => {
+      const candidates = (list || []).filter(match);
+      return candidates.find((a) => /(^|\/)index\.html?$/i.test(a.title || '')) ?? candidates[0] ?? null;
+    };
+    const fromTurn = indexFirst(
+      activeLocalTurn?.result?.artifacts,
       (a) => a.kind === 'preview' && (a.preview || '').trim(),
     );
-    if (fromTurn) return fromTurn;
-    const fromLive = (liveArtifacts || []).find(
+    const turnArtifacts = activeLocalTurn?.result?.artifacts || [];
+    if (fromTurn) return withBundledPreview(fromTurn, turnArtifacts);
+    const fromLive = indexFirst(
+      liveArtifacts,
       (a) => (a.kind === 'preview' || a.kind === 'html') && (a.preview || a.code || '').trim(),
     );
-    return fromLive || null;
+    return fromLive ? withBundledPreview(fromLive, liveArtifacts || []) : null;
   }, [activeLocalTurn, liveArtifacts]);
   // Don't keep showing the preview after switching to a run that has none.
   useEffect(() => { if (!centerPreviewArtifact) setCenterPreview(false); }, [centerPreviewArtifact]);
@@ -615,17 +917,17 @@ function App() {
   // fallback id. Poll history under the *same* id, or we'd query an empty chat.
   const turnChatId = authed ? activeChatId : localChatId;
   const loadLocalHistory = useCallback(async () => {
+    if (!authed) {
+      setLocalTurns([]);
+      return;
+    }
     if (!turnChatId) return;
     try {
-      const res = await fetch(`/api/orchestrator/history?chatId=${turnChatId}`, { cache: 'no-store' });
+      const params = new URLSearchParams({ chatId: turnChatId });
+      const res = await fetch(`/api/orchestrator/history?${params.toString()}`, { cache: 'no-store' });
       const data = await res.json();
       if (!res.ok || !data.ok) return;
-      let storedTurns = data.turns || [];
-      if (!authed && storedTurns.length === 0) {
-        const fallbackRes = await fetch('/api/orchestrator/history', { cache: 'no-store' });
-        const fallbackData = await fallbackRes.json();
-        if (fallbackRes.ok && fallbackData.ok) storedTurns = fallbackData.turns || [];
-      }
+      const storedTurns = data.turns || [];
       const turns = storedTurns.map((turn) => {
         const liveTurn = storedTurnToLiveTurn(turn);
         return {
@@ -648,6 +950,26 @@ function App() {
     if (authStatus === 'loading') return;
     loadLocalHistory();
   }, [authStatus, loadLocalHistory]);
+
+  // Deleting a session removes the turn AND its workspace code on disk (the
+  // backend keeps workbench-linked project dirs safe — runs/ output only), so
+  // ask before doing something that can't be undone.
+  const deleteLocalTurn = useCallback(async (turnId) => {
+    const sure = window.confirm('Delete this session? Its generated workspace code is deleted with it.');
+    if (!sure) return;
+    try {
+      await fetch('/api/orchestrator/turn/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ turnId }),
+      });
+    } catch {
+      // Best-effort: reload below reflects whatever actually happened.
+    }
+    setLocalTurns((turns) => turns.filter((turn) => turn.id !== turnId));
+    setSelectedLocalTurnId((current) => (current === turnId ? null : current));
+    loadLocalHistory();
+  }, [loadLocalHistory]);
 
   // Dispatch runs in the background on the server (fire-and-forget), so while a
   // turn's dispatch is 'running' we poll history to fill in artifacts as they
@@ -703,7 +1025,7 @@ function App() {
     return created;
   };
   const sendLocalTurn = async (message, turnId, chatIdOverride, workflowTemplateId) => {
-    const id = turnId || 'live-' + Date.now();
+    const id = turnId || randomClientId('live');
     const createdAt = new Date().toISOString();
     setInspectorTab('chat');
     setNotesOpen(true);
@@ -990,6 +1312,10 @@ function App() {
   };
   const createLocalTask = (goal, workflowTemplateId) => {
     setModal(null);
+    if (!authed) {
+      handleSignUp();
+      return;
+    }
     setView('roundtable');
     setInspectorTab('chat');
     setNotesOpen(true);
@@ -999,33 +1325,60 @@ function App() {
     if (authed) {
       if (activeChatId) {
         createMessage.mutate({ chatId: activeChatId, content: message });
+        sendLocalTurn(message, undefined, activeChatId, workflowTemplateId);
       } else {
         const workbench = await ensureWorkbench();
         const chat = await createChat.mutateAsync({ title: message.slice(0, 160), workbenchId: workbench.id });
         if (chat) {
           await createMessage.mutateAsync({ chatId: chat.id, content: message });
+          sendLocalTurn(message, undefined, chat.id, workflowTemplateId);
         }
       }
       return;
     }
-    if (workflowTemplateId || !activeLocalTurn) {
-      sendLocalTurn(message, undefined, undefined, workflowTemplateId);
-      return;
-    }
-    appendLocalMessage(message);
+    handleSignIn();
   };
-  const breakoutData = RT.SCRIPT.find((b) => b.kind === 'breakout');
+  const demoBreakoutData = RT.SCRIPT.find((b) => b.kind === 'breakout');
+  // When authed with a live room, drive the modal from the server bundle;
+  // otherwise fall back to the scripted demo room (marketing / logged-out view).
+  const liveBreakoutRoom = liveBreakoutRooms && liveBreakoutRooms.length ? liveBreakoutRooms[0] : null;
+  const breakoutData = liveBreakoutRoom
+    ? {
+        id: liveBreakoutRoom.id,
+        a: liveBreakoutRoom.participantAgentIds[0],
+        b: liveBreakoutRoom.participantAgentIds[1],
+        turns: liveBreakoutRoom.messages.length,
+        transcript: liveBreakoutRoom.messages.map((m) => ({
+          agentId: m.authorId,
+          isUser: m.authorType === 'user',
+          text: m.content,
+        })),
+      }
+    : demoBreakoutData;
+  const sendBreakoutNote = (text) => {
+    if (!liveBreakoutRoom) return;
+    postBreakoutMessage.mutate({ roomId: liveBreakoutRoom.id, content: text });
+  };
 
   return (
     <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-      <TopBar t={t} setTweak={setTweak} view={view} setView={setView} />
+      <TopBar t={t} setTweak={setTweak} view={view} setView={setView}
+        authStatus={authStatus} user={session?.user}
+        onSignIn={handleSignIn} onSignUp={handleSignUp} onSignOut={handleSignOut} />
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
         {railOpen && !compact && <ConversationRail workbench={railWorkbench} workbenches={railWorkbenches}
           tasks={tasks} agents={agents} activeId={authed ? activeChatId : activeLocalTaskId} onPick={authed ? pickChat : pickLocalTurn}
           memberIds={memberIds} onRemoveMember={(id) => setMemberIds((m) => m.filter((x) => x !== id))}
           onAddMember={() => setModal('agent')} onNewTask={() => setModal('task')} onNewWorkbench={() => setModal('table')}
           onPickWorkbench={pickWorkbench} onCollapse={() => setRailOpen(false)}
-          onDelete={authed ? (id) => { deleteChat.mutate({ id }); if (id === selectedChatId) setSelectedChatId(null); } : undefined} />}
+          authStatus={authStatus} user={session?.user} onOpenProfile={handleOpenProfile} onSignIn={handleSignIn}
+          onDelete={authed
+            ? (id) => {
+                if (!window.confirm('Delete this session? Its generated workspace code is deleted with it.')) return;
+                deleteChat.mutate({ id });
+                if (id === selectedChatId) setSelectedChatId(null);
+              }
+            : deleteLocalTurn} />}
         {railOpen && compact && (
           <div style={{ position: 'fixed', inset: 0, zIndex: 110, background: alpha('#000', 30), display: 'flex' }}
             onClick={() => setRailOpen(false)}>
@@ -1035,7 +1388,14 @@ function App() {
                 memberIds={memberIds} onRemoveMember={(id) => setMemberIds((m) => m.filter((x) => x !== id))}
                 onAddMember={() => setModal('agent')} onNewTask={() => setModal('task')} onNewWorkbench={() => setModal('table')}
                 onPickWorkbench={pickWorkbench} onCollapse={() => setRailOpen(false)}
-                onDelete={authed ? (id) => { deleteChat.mutate({ id }); if (id === selectedChatId) setSelectedChatId(null); } : undefined} />
+                authStatus={authStatus} user={session?.user} onOpenProfile={handleOpenProfile} onSignIn={handleSignIn}
+                onDelete={authed
+            ? (id) => {
+                if (!window.confirm('Delete this session? Its generated workspace code is deleted with it.')) return;
+                deleteChat.mutate({ id });
+                if (id === selectedChatId) setSelectedChatId(null);
+              }
+            : deleteLocalTurn} />
             </div>
           </div>
         )}
@@ -1058,7 +1418,8 @@ function App() {
                           <RoundtableScene agents={agents} scene={st} onOpenArtifact={setDrawerArt}
                             onAction={onAction} onOpenBreakouts={() => setHubOpen(true)} onSeatClick={(id) => setDmAgent(id)}
                             onOpenFiles={() => { setInspectorTab('files'); setNotesOpen(true); }}
-                            onZoomWhiteboard={() => setZoomWB(true)} wide={!railOpen && !notesOpen} memberIds={memberIds} />
+                            onZoomWhiteboard={() => setZoomWB(true)} wide={!railOpen && !notesOpen} memberIds={memberIds}
+                            activityByAgent={st.work ? Object.fromEntries(Object.entries(st.work).map(([agentId, now]) => [agentId, { now }])) : null} />
                         )}
                         <div style={{ position: 'absolute', top: 14, right: 14, zIndex: 50, display: 'flex', gap: 8 }}>
                           {centerPreviewArtifact && (
@@ -1111,12 +1472,12 @@ function App() {
                 </div>
                 {notesOpen && !compact && <ResizeHandle onResize={(dx) => setInspectorW((w) => Math.max(300, Math.min(640, w + dx)))} />}
                 {notesOpen && <InspectorPanel tab={inspectorTab} setTab={setInspectorTab} clock={scene.clock} width={compact ? 'min(100vw, 420px)' : inspectorW}
-                  agents={agents} scene={scene} live={authed && !!activeChatId} liveArtifacts={liveArtifacts} liveMessages={liveMessages}
+                  agents={agents} scene={scene} authed={authed} live={authed && !!activeChatId} liveArtifacts={liveArtifacts} liveMessages={liveMessages}
                   liveHandoffs={liveHandoffs} activeChatId={activeChatId}
-                  localTurns={activeLocalTurns.length ? activeLocalTurns : localTurns} localStatus={localStatus} onApproveLocalTurn={approveLocalTurn}
+                  localTurns={activeLocalTurns.length ? activeLocalTurns : localTurns} allLocalTurns={localTurns} localStatus={localStatus} onApproveLocalTurn={approveLocalTurn}
                   localTurnActions={{ interrupt: interruptLocalTurn, redispatch: redispatchLocalTurn, discard: discardLocalTurn, clarify: answerLocalClarification, approve: approveLocalTurn, delivery: decideLocalDelivery }}
                   onOpenArtifact={setDrawerArt} onAction={onAction} onClose={() => setNotesOpen(false)}
-                  onRewrite={sendComposerMessage} />}
+                  onRewrite={sendComposerMessage} memory={memoryPanel} />}
               </div>
               <Dock st={st} agents={agents} scene={scene} onAction={onAction}
                 onOpenChat={() => { setInspectorTab('chat'); setNotesOpen(true); }}
@@ -1127,19 +1488,24 @@ function App() {
                 workflow={liveWorkflow} workflowRun={liveWorkflowRun} />
             </>
           )}
-          {view === 'workflow' && <WorkflowView agents={agents} onAddAgent={() => setModal('agent')} onOpenTemplates={() => setModal('table')} />}
+          {view === 'workflow' && <WorkflowView agents={agents} onAddAgent={() => setModal('agent')} onOpenTemplates={() => setModal('table')}
+            serverTemplates={authed ? workflowTemplatesQ.data : null}
+            onSaveTemplate={(template) => saveWorkflowTemplate.mutate(template)}
+            onDeleteTemplate={(id) => deleteWorkflowTemplate.mutate({ id })} />}
         </div>
       </div>
 
       {drawerArt && <Drawer art={drawerArt} agents={agents} onClose={() => setDrawerArt(null)} />}
       {zoomWB && <WhiteboardZoom tasks={st.tasks} agents={agents} live={st.live} run={st.run} posted={st.planPosted} onClose={() => setZoomWB(false)} />}
       {breakoutOpen && <BreakoutModal data={breakoutData} agents={agents} onClose={() => setBreakoutOpen(false)}
-        onBringBack={() => { setInspectorTab('notes'); setNotesOpen(true); }} />}
-      {hubOpen && <BreakoutsHub agents={agents} memberIds={memberIds} autoRoom={st.breakout ? breakoutData : null}
+        onBringBack={() => { setInspectorTab('notes'); setNotesOpen(true); }}
+        onSend={liveBreakoutRoom ? sendBreakoutNote : undefined} sending={postBreakoutMessage.isPending} />}
+      {hubOpen && <BreakoutsHub agents={agents} memberIds={memberIds} autoRoom={st.breakout ? demoBreakoutData : null}
         onEnterAuto={() => { setHubOpen(false); setBreakoutOpen(true); }}
         onStartDM={(id) => { setHubOpen(false); setDmAgent(id); }} onClose={() => setHubOpen(false)} />}
       {dmAgent && <DMRoom agent={agents[dmAgent]}
         activeTask={(['working', 'speaking', 'thinking'].includes(st.status[dmAgent])) ? (RT.PLAN.tasks.find((tk) => tk.owner === dmAgent) || {}).id : null}
+        work={agentWorkFor(dmAgent, latestTurnResult)}
         onClose={() => setDmAgent(null)} />}
       {modal === 'task' && <NewTaskModal workbench={railWorkbench} members={memberIds} agents={agents}
         suggestionContext={missionSuggestionContext}
@@ -1160,7 +1526,6 @@ function App() {
         if (authed) {
           createWorkbench.mutate({
             name: input.name,
-            workspacePath: `workspaces/${Date.now()}`,
             description: `Created from ${input.workflowId}.`,
           }, {
             onSuccess: (workbench) => {

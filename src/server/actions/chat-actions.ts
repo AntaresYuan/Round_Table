@@ -1,6 +1,7 @@
-import { id, mutateData, nowIso } from '../store.js';
+import { id, mutateData, nowIso, readData } from '../store.js';
 import type { Actor, Chat, Message } from '../types.js';
 import { getWorkbench } from './workbench-actions.js';
+import { removeWorkspace } from './workspace-cleanup.js';
 
 export type CreateChatInput = {
   workbenchId: string;
@@ -8,15 +9,15 @@ export type CreateChatInput = {
 };
 
 export async function listChats(actor: Actor): Promise<Chat[]> {
-  return mutateData((data) =>
-    data.chats
-      .filter((chat) => chat.ownerId === actor.id)
-      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
-  );
+  const data = await readData();
+  return data.chats
+    .filter((chat) => chat.ownerId === actor.id)
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
 export async function getChat(actor: Actor, chatId: string): Promise<Chat | null> {
-  return mutateData((data) => data.chats.find((chat) => chat.ownerId === actor.id && chat.id === chatId) ?? null);
+  const data = await readData();
+  return data.chats.find((chat) => chat.ownerId === actor.id && chat.id === chatId) ?? null;
 }
 
 export async function createChat(actor: Actor, input: CreateChatInput): Promise<Chat> {
@@ -42,26 +43,35 @@ export async function createChat(actor: Actor, input: CreateChatInput): Promise<
 }
 
 export async function deleteChat(actor: Actor, chatId: string): Promise<{ id: string }> {
-  return mutateData((data) => {
+  const workspaces = await mutateData((data) => {
     const chat = data.chats.find((item) => item.ownerId === actor.id && item.id === chatId);
     if (!chat) throw new Error('chat_not_found');
+    // Capture the workspaces of the turns being removed so the session's code
+    // on disk goes with it (managed dirs entirely; project dirs runs-only).
+    const paths = data.turns
+      .filter((turn) => turn.localChatId === chatId)
+      .map((turn) => turn.dispatchWorkspacePath)
+      .filter((path): path is string => Boolean(path));
     data.chats = data.chats.filter((item) => item.id !== chatId);
     data.messages = data.messages.filter((message) => message.chatId !== chatId);
     data.artifacts = data.artifacts.filter((artifact) => artifact.chatId !== chatId);
     data.handoffs = data.handoffs.filter((handoff) => handoff.chatId !== chatId);
     data.turns = data.turns.filter((turn) => turn.localChatId !== chatId);
     data.missions = data.missions.filter((mission) => !(mission.ownerId === actor.id && mission.chatId === chatId));
-    return { id: chatId };
+    return paths;
   });
+  for (const workspace of new Set(workspaces)) {
+    await removeWorkspace(workspace);
+  }
+  return { id: chatId };
 }
 
 export async function listMessages(actor: Actor, chatId: string): Promise<Message[]> {
   await requireChat(actor, chatId);
-  return mutateData((data) =>
-    data.messages
-      .filter((message) => message.ownerId === actor.id && message.chatId === chatId)
-      .sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
-  );
+  const data = await readData();
+  return data.messages
+    .filter((message) => message.ownerId === actor.id && message.chatId === chatId)
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
 export async function createMessage(actor: Actor, input: { chatId: string; content: string }): Promise<Message> {

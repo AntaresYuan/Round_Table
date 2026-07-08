@@ -1,25 +1,35 @@
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   applyAnswers,
   assessClarity,
   assessHeuristic,
 } from '../src/server/actions/clarify-actions.js';
+import { resetData } from '../src/server/store.js';
 import type { ClarifyQuestion } from '../src/server/types.js';
 
 const originalKey = process.env.MINIMAX_API_KEY;
 const originalEnabled = process.env.ROUNDTABLE_CLARIFY_ENABLED;
+let tempDir = '';
 
-beforeEach(() => {
+beforeEach(async () => {
+  tempDir = await mkdtemp(join(tmpdir(), 'roundtable-clarify-'));
+  process.env.ROUNDTABLE_DATA_PATH = join(tempDir, 'data.json');
   // Force the deterministic heuristic path (no network) for these unit tests.
   delete process.env.MINIMAX_API_KEY;
   delete process.env.ROUNDTABLE_CLARIFY_ENABLED;
+  await resetData();
 });
 
-afterEach(() => {
+afterEach(async () => {
   if (originalKey === undefined) delete process.env.MINIMAX_API_KEY;
   else process.env.MINIMAX_API_KEY = originalKey;
   if (originalEnabled === undefined) delete process.env.ROUNDTABLE_CLARIFY_ENABLED;
   else process.env.ROUNDTABLE_CLARIFY_ENABLED = originalEnabled;
+  delete process.env.ROUNDTABLE_DATA_PATH;
+  await rm(tempDir, { recursive: true, force: true });
 });
 
 describe('clarify — heuristic assessment', () => {

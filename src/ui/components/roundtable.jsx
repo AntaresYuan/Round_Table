@@ -9,7 +9,7 @@
    ============================================================================ */
 import React from 'react';
 import { RT } from '../lib/rt';
-import { Icon, RoleTag, Spinner, tint, alpha } from './primitives';
+import { AgentMark, Icon, RoleTag, Spinner, tint, alpha } from './primitives';
 const { useState, useEffect, useRef, useMemo } = React;
 
 /* ---- layout presets ------------------------------------------------------ */
@@ -178,7 +178,7 @@ function ArchNode({ x, y, w, h, owner, title, sub, done, big }) {
   );
 }
 function LiveRunBoard({ tasks, agents, w, h, big, run }) {
-  const rows = (tasks || []).slice(0, 5);
+  const rows = uniqueTasksById(tasks || []).slice(0, 5);
   const ownerFor = (task) => {
     if (task.owner && agents[task.owner]) return agents[task.owner];
     const role = String(task.assignee || '').replace(/^@/, '');
@@ -426,7 +426,7 @@ function seatForTask(task, seats, agents) {
 // progressively as tasks complete, building up the real dependency graph on the
 // table. This is a static relationship, not an upstream→downstream flow.
 function DependencyArrows({ scene, agents, seats }) {
-  const tasks = scene.tasks || [];
+  const tasks = uniqueTasksById(scene.tasks || []);
   if (tasks.length === 0) return null;
   const byId = new Map(tasks.map((t) => [t.id, t]));
   const edges = [];
@@ -461,6 +461,12 @@ function DependencyArrows({ scene, agents, seats }) {
       })}
     </>
   );
+}
+
+function uniqueTasksById(tasks) {
+  const byId = new Map();
+  for (const task of tasks || []) byId.set(task.id, task);
+  return [...byId.values()];
 }
 
 function Beams({ scene, agents, seats }) {
@@ -513,15 +519,12 @@ function TableBody() {
   );
 }
 
-/* ---- Figure : a Notionists character (CC0, via DiceBear) seated at the table -
+/* ---- Figure : a local portrait mark seated at the table -------------------
    Colored ring = the agent's identity color; keeps the head-glow, ground shadow,
    and the speaking halo. ---------------------------------------------------- */
 function Figure({ agent, isUser, head, size, speaking }) {
   const color = isUser ? '#8076a0' : (agent.color || '#8076a0');
   const d = size;
-  const seed = encodeURIComponent(isUser ? 'you-user' : (agent.id || agent.displayName || 'rt'));
-  const peep = `https://api.dicebear.com/9.x/notionists/svg?seed=${seed}&backgroundColor=transparent`;
-  const off = Math.round(d * 1.28);
   return (
     <div style={{ position: 'relative', width: d, height: d * 1.16, margin: '0 auto' }}>
       {head && <div style={{ position: 'absolute', left: '50%', top: -d * 0.2, transform: 'translateX(-50%)',
@@ -534,8 +537,7 @@ function Figure({ agent, isUser, head, size, speaking }) {
       <div style={{ position: 'absolute', left: '50%', top: 0, transform: 'translateX(-50%)',
         width: d, height: d, borderRadius: '50%', overflow: 'hidden', zIndex: 2, background: 'var(--surface)',
         boxShadow: `0 0 0 ${Math.max(2, d * 0.05)}px var(--surface), 0 0 0 ${Math.max(3, d * 0.075)}px ${alpha(color, 70)}, 0 ${d * 0.08}px ${d * 0.16}px -${d * 0.04}px rgba(40,40,70,.35)` }}>
-        <img src={peep} alt={agent.displayName || ''} width={off} height={off}
-          style={{ position: 'absolute', left: '-14%', top: '-9%', pointerEvents: 'none' }} />
+        <AgentMark agent={agent || { displayName: 'You', color }} size={d} isUser={isUser} />
       </div>
     </div>
   );
@@ -595,6 +597,40 @@ function SpeechCard({ agent, speech, aggregate, onAction, s, drop }) {
   );
 }
 
+/* ---- live "now doing" bubble --------------------------------------------- */
+// Compact per-seat bubble for the live run: shows the agent's CURRENT step
+// (latest transcript entry — tool use, thinking, or reply) while it works.
+// Smaller than SpeechCard on purpose: several agents can work in parallel, so
+// every working seat gets one of these instead of a single scripted speaker.
+function NowDoingBubble({ agent, now, s }) {
+  const accent = agent.pm ? 'var(--pm)' : agent.color;
+  const text = (now.text || '').replace(/\s+/g, ' ').trim();
+  const shown = text.length > 84 ? `${text.slice(0, 84)}…` : text;
+  return (
+    <div style={{ position: 'absolute', left: '50%', top: -6, transform: 'translate(-50%, -100%)',
+      width: Math.round(210 * Math.max(0.94, s)), zIndex: 70, animation: 'rt-fadein .3s ease both' }}>
+      <div style={{ background: 'var(--surface)', borderRadius: 'var(--r-sm)', border: '1px solid var(--border)',
+        borderLeft: `2.5px solid ${accent}`, boxShadow: 'var(--shadow-card)', padding: '7px 9px', textAlign: 'left' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 10.5, fontWeight: 700,
+          color: accent, marginBottom: shown ? 3 : 0 }}>
+          {now.mode === 'thinking'
+            ? <Icon name="sparkle" size={10} style={{ color: accent }} />
+            : <Spinner size={10} color={accent} />}
+          {now.mode === 'thinking' ? 'thinking' : now.tool ? `using ${now.tool}` : now.mode === 'starting' ? 'starting up' : 'working'}
+          {now.steps > 1 && <span className="tnum" style={{ marginLeft: 'auto', fontWeight: 600,
+            color: 'var(--text-faint)' }}>step {now.steps}</span>}
+        </div>
+        {shown && now.mode !== 'starting' && (
+          <div style={{ fontSize: 11, lineHeight: 1.45, color: 'var(--text-muted)', wordBreak: 'break-word' }}>{shown}</div>
+        )}
+      </div>
+      <div style={{ position: 'absolute', left: '50%', bottom: -5, width: 10, height: 10,
+        transform: 'translateX(-50%) rotate(45deg)', background: 'var(--surface)',
+        borderRight: '1px solid var(--border)', borderBottom: '1px solid var(--border)' }} />
+    </div>
+  );
+}
+
 /* ---- Seat ---------------------------------------------------------------- */
 function Seat({ seat, agents, scene, dim, onAction, onSeatClick, activity }) {
   const { x, y, s } = seatPos(seat.angle);
@@ -619,17 +655,21 @@ function Seat({ seat, agents, scene, dim, onAction, onSeatClick, activity }) {
   const figSize = Math.round((seat.head ? 56 : 60) * s);
   const clickable = !isUser && onSeatClick;
   const activityCount = activity?.count || 0;
+  const nowDoing = !isUser && !seat.head && !showSpeech && activity?.now ? activity.now : null;
 
   return (
     <div onClick={clickable ? () => onSeatClick(seat.agentId) : undefined}
       title={clickable ? `Open ${agent.displayName} activity` : undefined}
       className={clickable ? 'rt-seat' : undefined}
       style={{ position: 'absolute', left: x, top: y, transform: `translate(-50%,-50%) translateY(${speaking ? -7 : 0}px)`,
-      zIndex: showSpeech ? 400 : z, transition: 'transform .4s cubic-bezier(.2,.8,.3,1)', cursor: clickable ? 'pointer' : 'default',
+      zIndex: showSpeech ? 400 : nowDoing ? 350 : z, transition: 'transform .4s cubic-bezier(.2,.8,.3,1)', cursor: clickable ? 'pointer' : 'default',
       opacity: dim ? 0.5 : 1, filter: dim ? 'saturate(.7)' : 'none', textAlign: 'center' }}>
 
       {showSpeech && agent && (
         <SpeechCard agent={agent} speech={scene.speech} aggregate={null} onAction={onAction} s={s} drop={false} />
+      )}
+      {nowDoing && agent && (
+        <NowDoingBubble agent={agent} now={nowDoing} s={s} />
       )}
 
       <div className={speaking ? '' : 'rt-bob'} style={{ animationDelay: `${(seat.angle % 360) / 90}s` }}>

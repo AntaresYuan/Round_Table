@@ -1,5 +1,5 @@
 import type { ClarifyAnswer, ClarifyQuestion } from '../types.js';
-import { isMiniMaxAvailable, runOnMiniMax } from './adapters/minimax-adapter.js';
+import { isMiniMaxConfigured, runOnMiniMax } from './adapters/minimax-adapter.js';
 
 /* ============================================================================
    clarify-actions.ts — the planner's "ask before building" gate.
@@ -41,7 +41,7 @@ export async function assessClarity(message: string): Promise<ClarityAssessment>
     return { clarity: 1, needsClarification: false, questions: [] };
   }
 
-  if (isMiniMaxAvailable()) {
+  if (await isMiniMaxConfigured()) {
     const fromModel = await assessWithModel(message).catch(() => null);
     if (fromModel) return fromModel;
   }

@@ -10,8 +10,9 @@
 import React from 'react';
 import { Avatar, Icon, Spinner, Md, tint, alpha } from './primitives';
 import { agentForArtifact, agentForSeat, todoStatusFor } from '../lib/agent-utils';
+import { bundlePreviewArtifacts, withBundledPreview } from '../lib/preview-html';
 
-const { useState, useEffect, useRef } = React;
+const { useState, useEffect, useRef, useMemo } = React;
 
 function UserMsg({ text }) {
   return (
@@ -195,8 +196,9 @@ function LocalLiveTurn({ turn, agents, turnActions, showPreview }) {
   const running = turn.result?.dispatchStatus === 'running';
   const stopping = turn.result?.dispatchStage === 'interrupting' || turn.interrupting;
   const interrupted = failed && turn.result?.dispatchError === 'interrupted_by_user';
-  const artifacts = turn.result?.artifacts || [];
-  const previewArtifact = artifacts.find((artifact) => artifact.kind === 'preview');
+  const rawArtifacts = turn.result?.artifacts || [];
+  const artifacts = useMemo(() => bundlePreviewArtifacts(rawArtifacts), [rawArtifacts]);
+  const previewArtifact = previewArtifactFor(artifacts, agents);
   // The plan has been drafted but no agent has run yet — show the reviewable plan
   // with a Start button instead of the (empty) run details.
   const awaitingApproval = !!turn.result
@@ -262,6 +264,7 @@ function LocalLiveTurn({ turn, agents, turnActions, showPreview }) {
                 dispatchStatus={turn.result.dispatchStatus}
                 dispatchAdapter={turn.result.dispatchAdapter}
                 workspacePath={turn.result.dispatchWorkspacePath || turn.result.workspacePath}
+                liveActivity={turn.result.dispatchStatus === 'running' ? turn.result.liveActivity : null}
               />
               {running && turnActions && (
                 <LocalStopBar
@@ -287,6 +290,8 @@ function LocalLiveTurn({ turn, agents, turnActions, showPreview }) {
                   artifacts={artifacts}
                   agents={agents}
                   dispatchStatus={turn.result.dispatchStatus}
+                  liveActivity={turn.result.liveActivity}
+                  records={turn.result.dispatch}
                 />
               )}
               {(completed || failed || running || interrupted) && !(interrupted && turn.discarded) && (
@@ -316,12 +321,117 @@ function LocalLiveTurn({ turn, agents, turnActions, showPreview }) {
   );
 }
 
+function previewArtifactFor(artifacts, agents) {
+  const previews = (artifacts || []).filter((artifact) => artifact.kind === 'preview' && artifact.preview);
+  // Prefer the homepage over whatever page happened to be scanned/listed first.
+  const explicit = previews.find((artifact) => /(^|\/)index\.html?$/i.test(artifact.title || '')) ?? previews[0];
+  if (explicit) return withBundledPreview(explicit, artifacts);
+  const candidates = (artifacts || [])
+    .map((artifact, index) => {
+      const owner = agentForArtifact(artifact, agents);
+      const html = extractHtmlDocument(`${artifact.preview || ''}\n${artifact.code || ''}`);
+      let score = 0;
+      if (owner?.role === 'implementer') score += 40;
+      if (owner?.role === 'fixer') score += 30;
+      if (/\/work\//i.test(artifact.title || '')) score += 20;
+      if (/\/fixes\//i.test(artifact.title || '')) score += 10;
+      return { artifact, html, score, index };
+    })
+    .filter((candidate) => candidate.html);
+  candidates.sort((a, b) => b.score - a.score || a.index - b.index);
+  const best = candidates[0];
+  if (!best) return null;
+  // Bundle BEFORE renaming: the bundler resolves relative css/js refs against
+  // the artifact title, so the "Preview · " prefix would break path resolution.
+  const bundled = withBundledPreview(
+    { ...best.artifact, kind: 'preview', preview: best.html, code: null },
+    artifacts,
+  );
+  return { ...bundled, title: `Preview · ${best.artifact.title}` };
+}
 
+function extractHtmlDocument(raw) {
+  const start = raw.search(/<!doctype\s+html[^>]*>|<html[\s>]/i);
+  if (start < 0) return null;
+  const fromStart = raw.slice(start);
+  if (!/<body[\s>]/i.test(fromStart)) return null;
+  const end = fromStart.search(/<\/html>/i);
+  const document = end >= 0
+    ? fromStart.slice(0, end + fromStart.match(/<\/html>/i)[0].length)
+    : fromStart.replace(/`+\s*$/, '');
+  return document.trim() || null;
+}
+
+
+
+const TRANSCRIPT_KIND_STYLE = {
+  thinking: { icon: 'sparkle', color: 'var(--text-muted)' },
+  status: { icon: 'wrench', color: 'var(--text-faint)' },
+  response: { icon: 'clip', color: 'var(--text-muted)' },
+  error: { icon: 'x', color: 'var(--bad)' },
+};
+
+// Live per-task activity feed: streams the runtime conversation transcript
+// (thinking / tool status / errors) while the agent works, so a running stage
+// shows WHAT the agent is doing instead of a bare "Working…" placeholder —
+// and a failed one shows the actual error output, not just a red chip.
+// `compact` drops the agent name + status from the header: inside a stage card
+// the seat row directly above already shows both, so repeating them made one
+// running stage read "running" three times.
+function LiveTranscriptFeed({ activity, agents, compact }) {
+  const scrollRef = useRef(null);
+  const entries = activity?.transcript || [];
+  useEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  }, [entries.length]);
+  if (!activity) return null;
+  const ag = agents[activity.agentId]
+    || Object.values(agents).find((a) => a.agentId === activity.agentId)
+    || agents.orchestrator;
+  const running = activity.status === 'running';
+  const failed = activity.status === 'failed';
+  return (
+    <div style={{ borderRadius: 'var(--r-sm)', border: `1px solid ${failed ? alpha('var(--bad)', 30) : 'var(--border)'}`,
+      background: 'var(--surface-2)', overflow: 'hidden' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 7, padding: compact ? '4px 10px' : '6px 10px',
+        borderBottom: '1px solid var(--border)' }}>
+        {!compact && <Avatar agent={ag} size={18} ring={false} />}
+        {!compact && <span style={{ fontSize: 11.5, fontWeight: 700, color: ag.color }}>{ag.displayName}</span>}
+        <span className="mono" style={{ fontSize: 10, color: 'var(--text-faint)' }}>{activity.runtime}</span>
+        <span style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 10.5,
+          fontWeight: 700, color: failed ? 'var(--bad)' : running ? 'var(--run, var(--accent))' : 'var(--ok)' }}>
+          {running && <Spinner size={9} color="var(--run, var(--accent))" />}
+          {!compact && activity.status}
+        </span>
+      </div>
+      <div ref={scrollRef} style={{ maxHeight: 150, overflowY: 'auto', padding: '7px 10px', display: 'grid', gap: 3 }}>
+        {entries.length === 0 && (
+          <div style={{ fontSize: 11.5, color: 'var(--text-faint)', fontStyle: 'italic' }}>
+            {running ? 'Starting up — no output yet…' : 'No live output captured.'}
+          </div>
+        )}
+        {entries.map((entry, index) => {
+          const sty = TRANSCRIPT_KIND_STYLE[entry.kind] || TRANSCRIPT_KIND_STYLE.status;
+          return (
+            <div key={index} style={{ display: 'flex', gap: 6, alignItems: 'flex-start', fontSize: 11.5,
+              lineHeight: 1.45, color: sty.color }}>
+              <Icon name={sty.icon} size={10} style={{ marginTop: 3, flexShrink: 0, color: sty.color }} />
+              <span style={{ minWidth: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{entry.content}</span>
+            </div>
+          );
+        })}
+        {failed && activity.error && !entries.some((entry) => entry.kind === 'error') && (
+          <div style={{ fontSize: 11.5, color: 'var(--bad)' }}>{activity.error}</div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 // Per-stage card: as the workflow advances, each stage that starts gets its own
 // card showing who's on it, live status, and the artifacts they produced. This
 // is the "new stage → new card" timeline (not a tab/strip).
-function StageCard({ stage, stageRun, artifacts, agents }) {
+function StageCard({ stage, stageRun, artifacts, agents, liveActivity, records }) {
   const status = stageRun?.status || 'pending';
   const sty = STAGE_STATUS_STYLE[status] || STAGE_STATUS_STYLE.pending;
   const roles = new Set(
@@ -329,11 +439,20 @@ function StageCard({ stage, stageRun, artifacts, agents }) {
   );
   const explicitIds = new Set(stageRun?.artifactIds || []);
   const taskIds = new Set(stageRun?.taskIds || []);
+  // Dispatch records carry the per-task artifact attribution (including real
+  // workspace files, whose ids are path-keyed and never taskId-prefixed).
+  const recordIds = new Set((records || [])
+    .filter((record) => taskIds.has(record.taskId))
+    .flatMap((record) => record.artifactIds || []));
   const stageArtifacts = artifacts.filter((a) =>
     explicitIds.has(a.id)
+    || recordIds.has(a.id)
     || [...taskIds].some((taskId) => a.id.startsWith(`${taskId}_`))
     || roles.has(a.ownerAgentId),
   );
+  const stageActivities = [...taskIds]
+    .map((taskId) => ({ taskId, activity: liveActivity?.[taskId] }))
+    .filter((item) => item.activity);
   return (
     <div className="rt-rise" style={{ marginTop: 10, border: `1px solid ${alpha(sty.color, 35)}`,
       borderRadius: 'var(--r-card)', background: 'var(--surface)', boxShadow: 'var(--shadow-card)', overflow: 'hidden' }}>
@@ -372,6 +491,13 @@ function StageCard({ stage, stageRun, artifacts, agents }) {
             </div>
           );
         })}
+        {(status === 'active' || status === 'failed') && stageActivities.length > 0 && (
+          <div style={{ display: 'grid', gap: 6 }}>
+            {stageActivities.map(({ taskId, activity }) => (
+              <LiveTranscriptFeed key={taskId} activity={activity} agents={agents} compact />
+            ))}
+          </div>
+        )}
         {stageArtifacts.length > 0 && (
           <div style={{ display: 'grid', gap: 6, marginTop: 2 }}>
             {stageArtifacts.map((a) => (
@@ -379,7 +505,7 @@ function StageCard({ stage, stageRun, artifacts, agents }) {
             ))}
           </div>
         )}
-        {status === 'active' && stageArtifacts.length === 0 && (
+        {status === 'active' && stageArtifacts.length === 0 && stageActivities.length === 0 && (
           <div style={{ fontSize: 12, color: 'var(--text-faint)', fontStyle: 'italic' }}>Working…</div>
         )}
       </div>
@@ -421,7 +547,17 @@ function LocalInterruptedCard({ turn, agents, artifacts, onResume, onDiscard, on
     if (agents[target]) return agents[target];
     return Object.values(agents).find((a) => a.role === target && !a.pm) || agents.orchestrator;
   };
-  const ranTasks = records.map((record) => {
+  // Interrupted runs die before DispatchRecords are folded into the turn, but
+  // per-task status still lands in workflowRun.stageStates as each agent runs —
+  // fall back to it so the summary doesn't claim "0 tasks ran" after real work.
+  const stageStates = turn.result?.workflowRun?.stageStates || {};
+  const stageToRecordStatus = { done: 'completed', failed: 'failed', running: 'running' };
+  const ranSource = records.length > 0
+    ? records
+    : Object.entries(stageStates)
+        .filter(([, state]) => stageToRecordStatus[state?.status])
+        .map(([taskId, state]) => ({ taskId, status: stageToRecordStatus[state.status] }));
+  const ranTasks = ranSource.map((record) => {
     const task = taskById.get(record.taskId);
     return {
       taskId: record.taskId,
@@ -430,7 +566,7 @@ function LocalInterruptedCard({ turn, agents, artifacts, onResume, onDiscard, on
       status: record.status,
     };
   });
-  const notStarted = (plan?.tasks || []).filter((task) => !records.some((r) => r.taskId === task.id));
+  const notStarted = (plan?.tasks || []).filter((task) => !ranSource.some((r) => r.taskId === task.id));
   const quickAction = (label, icon, onClick, primary) => onClick && (
     <button onClick={onClick} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 11px',
       borderRadius: 'var(--r-sm)', border: primary ? 'none' : '1px solid var(--border)', cursor: 'pointer',
@@ -486,7 +622,7 @@ function LocalInterruptedCard({ turn, agents, artifacts, onResume, onDiscard, on
 // store only holds the initial all-pending projection, so we synthesize an
 // "active" marker on the first unfinished stage to keep the run from looking
 // frozen until completion.
-function StageCards({ workflow, workflowRun, artifacts, agents, dispatchStatus }) {
+function StageCards({ workflow, workflowRun, artifacts, agents, dispatchStatus, liveActivity, records }) {
   if (!workflow || !workflowRun) return null;
   const stages = workflow.stages.filter(
     (s) => {
@@ -536,6 +672,8 @@ function StageCards({ workflow, workflowRun, artifacts, agents, dispatchStatus }
             stageRun={stageRun}
             artifacts={artifacts}
             agents={agents}
+            liveActivity={liveActivity}
+            records={records}
           />
         );
       })}
@@ -543,10 +681,15 @@ function StageCards({ workflow, workflowRun, artifacts, agents, dispatchStatus }
   );
 }
 
-function AgentChainCard({ plan, records, artifacts, agents, dispatchStatus, dispatchAdapter, workspacePath }) {
+function AgentChainCard({ plan, records, artifacts, agents, dispatchStatus, dispatchAdapter, workspacePath, liveActivity }) {
   const tasks = Array.isArray(plan?.tasks) ? plan.tasks : [];
   const taskById = new Map(tasks.map((task) => [task.id, task]));
   const visibleRecords = Array.isArray(records) ? records : [];
+  // Dispatch records only land once the whole run finishes; while agents are
+  // still working the live conversation transcript is the only signal, so
+  // stream it here instead of a static "waiting" line.
+  const liveEntries = Object.entries(liveActivity || {})
+    .filter(([taskId]) => !visibleRecords.some((record) => record.taskId === taskId));
   const statusColor = dispatchStatus === 'completed'
     ? 'var(--ok)'
     : dispatchStatus === 'failed'
@@ -559,7 +702,18 @@ function AgentChainCard({ plan, records, artifacts, agents, dispatchStatus, disp
     if (agents[target]) return agents[target];
     return Object.values(agents).find((agent) => agent.role === target && !agent.pm) || agents.orchestrator;
   };
-  const artifactFor = (taskId) => artifacts.find((artifact) => artifact.id.startsWith(`${taskId}_`));
+  // Everything this task's agent produced or edited: records persisted after
+  // per-task attribution landed carry explicit artifactIds; older records fall
+  // back to the task-prefixed transcript artifact. Real workspace files sort
+  // before this system's own run logs — the files are the deliverable.
+  const artifactsFor = (record) => {
+    const ids = new Set(record.artifactIds || []);
+    const matched = ids.size > 0
+      ? artifacts.filter((artifact) => ids.has(artifact.id))
+      : artifacts.filter((artifact) => artifact.id.startsWith(`${record.taskId}_`));
+    const isRunLog = (artifact) => (artifact.title || '').startsWith('.roundtable/runs/') ? 1 : 0;
+    return [...matched].sort((a, b) => isRunLog(a) - isRunLog(b));
+  };
 
   return (
     <div style={{ marginTop: 6, display: 'grid', gap: 10 }}>
@@ -568,27 +722,45 @@ function AgentChainCard({ plan, records, artifacts, agents, dispatchStatus, disp
         <span>{dispatchStatus === 'completed' ? 'run complete' : dispatchStatus === 'failed' ? 'run failed' : 'running'}</span>
         {dispatchAdapter && <span className="mono" style={{ color: 'var(--text-faint)', fontWeight: 500 }}>via {dispatchAdapter}</span>}
       </div>
+      {liveEntries.length > 0 && (
+        <div style={{ display: 'grid', gap: 6 }}>
+          {liveEntries.map(([taskId, activity]) => (
+            <LiveTranscriptFeed key={taskId} activity={activity} agents={agents} />
+          ))}
+        </div>
+      )}
       {visibleRecords.length === 0 ? (
-        <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>Waiting for the first agent output.</div>
+        liveEntries.length === 0 && (
+          <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>Waiting for the first agent output.</div>
+        )
       ) : visibleRecords.map((record) => {
         const task = taskById.get(record.taskId);
         const owner = ownerFor(task, record);
-        const artifact = artifactFor(record.taskId);
+        const taskArtifacts = artifactsFor(record);
         return (
           <div key={record.taskId} style={{ borderLeft: `2px solid ${alpha(owner.color, 60)}`, paddingLeft: 12 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
               <Avatar agent={owner} size={24} ring={false} />
               <span style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--text)' }}>{owner.displayName}</span>
               <span className="mono" style={{ fontSize: 11, color: 'var(--text-faint)' }}>@{owner.mention || owner.agentId || owner.role}</span>
+              {taskArtifacts.length > 1 && (
+                <span className="mono tnum" style={{ fontSize: 10.5, color: 'var(--text-faint)' }}>
+                  {taskArtifacts.length} files
+                </span>
+              )}
               <span style={{ marginLeft: 'auto', fontSize: 11, color: record.status === 'failed' ? 'var(--bad)' : 'var(--ok)', fontWeight: 700 }}>
                 {record.status}
               </span>
             </div>
             {task?.title && (
-              <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: artifact ? 8 : 0 }}>{task.title}</div>
+              <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: taskArtifacts.length > 0 ? 8 : 0 }}>{task.title}</div>
             )}
-            {artifact ? (
-              <ExpandableArtifact artifact={artifact} owner={owner} />
+            {taskArtifacts.length > 0 ? (
+              <div style={{ display: 'grid', gap: 6 }}>
+                {taskArtifacts.map((artifact) => (
+                  <ExpandableArtifact key={`${artifact.id}-${artifact.version}`} artifact={artifact} owner={owner} />
+                ))}
+              </div>
             ) : (
               <div style={{ fontSize: 12, color: 'var(--text-faint)', fontStyle: 'italic' }}>No output captured.</div>
             )}
@@ -604,8 +776,21 @@ function AgentChainCard({ plan, records, artifacts, agents, dispatchStatus, disp
   );
 }
 
+// +N/−N line-change badge for one artifact version — who touched a file is only
+// half the audit trail; this is the "how much" half.
+function ChangeBadge({ change }) {
+  if (!change || (!change.added && !change.removed)) return null;
+  return (
+    <span className="mono tnum" style={{ display: 'inline-flex', gap: 5, fontSize: 10.5, fontWeight: 700, flexShrink: 0 }}>
+      {change.added > 0 && <span style={{ color: 'var(--ok)' }}>+{change.added}</span>}
+      {change.removed > 0 && <span style={{ color: 'var(--bad)' }}>−{change.removed}</span>}
+    </span>
+  );
+}
+
 // One agent's deliverable, click to expand and read what they actually produced
-// — turns the result list from a black box into reviewable output.
+// — turns the result list from a black box into reviewable output. The header
+// is the attribution row: avatar + file path + version + line delta + @owner.
 function ExpandableArtifact({ artifact, owner }) {
   const [open, setOpen] = useState(false);
   const content = artifact.preview || '';
@@ -614,7 +799,7 @@ function ExpandableArtifact({ artifact, owner }) {
     <div style={{ borderRadius: 'var(--r-sm)', background: tint(owner.color, 7),
       border: `1px solid ${alpha(owner.color, 22)}`, overflow: 'hidden' }}>
       <button onClick={() => setOpen((v) => !v)} style={{ width: '100%', display: 'grid',
-        gridTemplateColumns: 'auto auto auto 1fr auto', gap: 9, alignItems: 'center', padding: '8px 10px',
+        gridTemplateColumns: 'auto auto auto 1fr auto auto auto', gap: 9, alignItems: 'center', padding: '8px 10px',
         background: 'transparent', border: 'none', cursor: 'pointer', font: 'inherit', textAlign: 'left' }}>
         <Icon name={open ? 'chevdown' : 'chevron'} size={12} style={{ color: owner.color }} />
         <Avatar agent={owner} size={20} ring={false} />
@@ -622,6 +807,11 @@ function ExpandableArtifact({ artifact, owner }) {
           style={{ color: owner.color }} />
         <span className="mono" style={{ fontSize: 12, color: 'var(--text)', overflow: 'hidden',
           textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{artifact.title}</span>
+        {artifact.version > 1 && (
+          <span className="mono tnum" style={{ fontSize: 10.5, fontWeight: 600, padding: '1px 6px', borderRadius: 5,
+            background: 'var(--surface-3)', color: 'var(--text-muted)', flexShrink: 0 }}>v{artifact.version}</span>
+        )}
+        <ChangeBadge change={artifact.change} />
         <span style={{ fontSize: 11, color: owner.color, fontWeight: 700 }}>@{owner.role || artifact.ownerAgentId}</span>
       </button>
       {open && (
@@ -893,6 +1083,7 @@ function LocalPlanCard({ plan, intake, agents, approvalStatus, approving, approv
 
 export {
   UserMsg,
+  LiveTranscriptFeed,
   LocalLiveThread,
   LocalLiveTurn,
   ClarifyCard,

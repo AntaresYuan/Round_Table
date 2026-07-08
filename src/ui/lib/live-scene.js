@@ -8,6 +8,7 @@
    ============================================================================ */
 
 import { agentForArtifact } from './agent-utils';
+import { bundlePreviewArtifacts } from './preview-html';
 
 function latestLiveTurn(liveTurns) {
   const turns = (liveTurns || []).filter((turn) => turn.result || turn.status === 'pending' || turn.status === 'error');
@@ -67,12 +68,57 @@ function normalizeLiveArtifacts(artifacts, agents) {
   });
 }
 
+function uniqueTasksById(tasks) {
+  const byId = new Map();
+  for (const task of tasks || []) byId.set(task.id, task);
+  return [...byId.values()];
+}
+
+// Each turn's result.artifacts is a full snapshot (backend upserts by id + bumps
+// version), not a delta — so concatenating across turns re-lists every file from
+// every prior turn. Dedupe by id here too, keeping the highest version seen.
+function uniqueArtifactsById(artifacts) {
+  const byId = new Map();
+  for (const artifact of artifacts || []) {
+    const existing = byId.get(artifact.id);
+    if (!existing || (artifact.version ?? 0) >= (existing.version ?? 0)) byId.set(artifact.id, artifact);
+  }
+  return [...byId.values()];
+}
+
 function liveArtifactsFromTurns(liveTurns, agents, liveStatus) {
   const turns = liveTurns || [];
+  const flattened = turns.flatMap((turn) => normalizeLiveArtifacts(turn.result?.artifacts || [], agents));
   return [
     ...(turns.length > 0 ? [livePlanArtifact(turns, liveStatus)] : []),
-    ...turns.flatMap((turn) => normalizeLiveArtifacts(turn.result?.artifacts || [], agents)),
+    ...bundlePreviewArtifacts(uniqueArtifactsById(flattened)),
   ];
+}
+
+// Project each task's live runtime transcript onto its agent: the latest
+// transcript entry becomes the seat's "now doing" bubble on the roundtable
+// (tool use → working, thinking → thinking, response → speaking). Only tasks
+// that are actually running get a bubble; finished transcripts would read as
+// stale chatter.
+function workByAgent(liveActivity, tasks, agents) {
+  const work = {};
+  for (const [taskId, activity] of Object.entries(liveActivity || {})) {
+    if (!activity || activity.status !== 'running') continue;
+    const task = (tasks || []).find((item) => item.id === taskId);
+    const agentId = agents[activity.agentId] ? activity.agentId : task?.owner;
+    if (!agentId) continue;
+    const entries = activity.transcript || [];
+    const latest = entries[entries.length - 1] || null;
+    const tool = latest?.kind === 'status' ? latest.content.replace(/^Using\s+/i, '') : null;
+    work[agentId] = {
+      taskId,
+      mode: !latest ? 'starting' : latest.kind === 'thinking' ? 'thinking' : latest.kind === 'status' ? 'working' : 'speaking',
+      text: latest ? latest.content : 'Starting up…',
+      tool,
+      steps: entries.length,
+    };
+  }
+  return work;
 }
 
 function buildLocalScene(baseScene, liveTurns, agents) {
@@ -99,7 +145,7 @@ function buildLocalScene(baseScene, liveTurns, agents) {
   // arrows on the table appear as each task finishes — not all at once.
   const stageStates = result?.workflowRun?.stageStates || {};
   const stageToTaskStatus = { done: 'completed', failed: 'failed', blocked: 'blocked', running: 'running', pending: 'pending' };
-  const liveTasks = result?.plan?.tasks?.map((task) => {
+  const liveTasks = uniqueTasksById(result?.plan?.tasks || []).map((task) => {
     const owner = ownerFor(task);
     const stageStatus = stageStates[task.id]?.status;
     const taskStatus = stageStatus
@@ -107,13 +153,21 @@ function buildLocalScene(baseScene, liveTurns, agents) {
       : (completed ? 'completed' : result?.dispatchStatus === 'running' ? 'running' : 'pending');
     status[owner.agentId] = taskStatus === 'completed' ? 'done' : taskStatus === 'running' ? 'working' : 'idle';
     return { ...task, owner: owner.agentId, status: taskStatus };
-  }) || [];
+  });
+
+  const work = workByAgent(result?.liveActivity, liveTasks, agents);
+  // A live transcript is a stronger signal than the coarse task status: an
+  // agent with a running conversation is thinking/working right now.
+  for (const [agentId, now] of Object.entries(work)) {
+    status[agentId] = now.mode === 'thinking' ? 'thinking' : 'working';
+  }
 
   return {
     ...baseScene,
     live: true,
     started: true,
     planPosted: true,
+    work,
     run: {
       phase: latest.status === 'pending' ? 'planning' : completed ? 'completed' : 'running',
       message: latest.message,

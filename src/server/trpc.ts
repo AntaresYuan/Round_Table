@@ -6,7 +6,6 @@ const t = initTRPC.context<TRPCContext>().create({
   transformer: superjson,
 });
 
-export const createCallerFactory = t.createCallerFactory;
 export const createTRPCRouter = t.router;
 export const publicProcedure = t.procedure;
 

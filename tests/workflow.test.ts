@@ -6,6 +6,7 @@ import { createChat, createMessage, deleteChat } from '../src/server/actions/cha
 import { normalizeAdapter } from '../src/server/actions/agent-runner.js';
 import { listMissions, rejectHandoff } from '../src/server/actions/mission-actions.js';
 import { listHandoffsByChat } from '../src/server/actions/read-actions.js';
+import { saveAgentRuntimeConfig } from '../src/server/actions/runtime-actions.js';
 import { answerClarification, approveTurn, createTurn, listTurns, reviewSeverities } from '../src/server/actions/turn-actions.js';
 import { createWorkbench } from '../src/server/actions/workbench-actions.js';
 import { resetData } from '../src/server/store.js';
@@ -34,8 +35,6 @@ afterEach(async () => {
   delete process.env.ROUNDTABLE_DATA_PATH;
   delete process.env.ROUNDTABLE_WORKSPACE_ROOT;
   delete process.env.ROUNDTABLE_AGENT_ADAPTER;
-  delete process.env.ROUNDTABLE_AGENT_COMMAND;
-  delete process.env.ROUNDTABLE_AGENT_ARGS;
   delete process.env.ROUNDTABLE_ENABLE_EXTERNAL_AGENT;
   delete process.env.ROUNDTABLE_ALLOW_CLAUDE_CLI;
   delete process.env.ROUNDTABLE_CLARIFY_ENABLED;
@@ -66,14 +65,17 @@ describe('Roundtable clean workflow', () => {
     // agent runs.
     expect(turn.approvalStatus).toBe('pending');
     expect(turn.needsApproval).toBe(true);
-    expect(turn.plan.tasks).toHaveLength(3);
+    // Default chain: planning → architecture (nova) → build → review + arch check.
+    expect(turn.plan.tasks).toHaveLength(5);
     expect(turn.plan.tasks[0]?.owner).toBe('orchestrator');
+    expect(turn.plan.tasks.map((task) => task.owner)).toContain('nova');
     expect(turn.plan.tasks.map((task) => task.owner)).toContain('atlas');
     expect(turn.plan.tasks.map((task) => task.owner)).toContain('vera');
     expect(turn.plan.tasks.every((task) => Array.isArray(task.deps))).toBe(true);
     expect(turn.plan.tasks.every((task) => typeof task.parallel === 'boolean')).toBe(true);
 
     const approval = await approveTurn({
+      actor,
       turnId: turn.id,
       decision: 'approve',
       autoDispatch: true,
@@ -81,15 +83,17 @@ describe('Roundtable clean workflow', () => {
     });
 
     expect(approval.dispatchStatus).toBe('completed');
-    expect(approval.records).toHaveLength(3);
+    expect(approval.records).toHaveLength(5);
     expect(approval.artifacts.length).toBeGreaterThanOrEqual(3);
     expect(approval.workspacePath).toContain('workspaces/test');
     expect(approval.artifacts.find((artifact) => artifact.id.startsWith('task_vera_'))?.preview)
       .toContain('Previous agent output');
     expect(approval.artifacts.find((artifact) => artifact.id.startsWith('task_vera_'))?.preview)
-      .toContain('HandoffCard V2');
+      .toContain('Roundtable handoff');
+    expect(approval.artifacts.find((artifact) => artifact.id.startsWith('task_vera_'))?.preview)
+      .toContain('Upstream output');
 
-    const history = await listTurns(chat.id);
+    const history = await listTurns(chat.id, { actor });
     expect(history).toHaveLength(1);
     expect(history[0]?.dispatchStatus).toBe('completed');
 
@@ -136,6 +140,7 @@ describe('Roundtable clean workflow', () => {
     expect(parked.needsClarification).toBe(true);
 
     const planned = await answerClarification({
+      actor,
       turnId: parked.id,
       answers: parked.clarifyQuestions.map((q) => ({
         questionId: q.id,
@@ -169,6 +174,7 @@ describe('Roundtable clean workflow', () => {
     expect(review?.title).not.toContain('生成一个镜头测评网站');
 
     await approveTurn({
+      actor,
       turnId: turn.id,
       decision: 'approve',
       autoDispatch: true,
@@ -177,7 +183,7 @@ describe('Roundtable clean workflow', () => {
 
     // After the planner runs, the plan defines the work — downstream tasks get
     // concrete, named titles (no longer "awaiting plan").
-    const after = (await listTurns()).find((t) => t.id === turn.id);
+    const after = (await listTurns(undefined, { actor })).find((t) => t.id === turn.id);
     const buildAfter = after?.plan.tasks.find((task) => task.role === 'implementer');
     const reviewAfter = after?.plan.tasks.find((task) => task.role === 'reviewer');
     expect(buildAfter?.title).not.toMatch(/awaiting plan/i);
@@ -211,15 +217,21 @@ describe('Roundtable clean workflow', () => {
     expect(cleanZh.blocking).toBe(0);
   });
 
-  it('defaults unmentioned backend work to planning, backend implementation, and review', async () => {
+  it('defaults unmentioned backend work to planning, architecture, backend implementation, and reviews', async () => {
     const turn = await createTurn({
       actor,
       message: 'Build an API endpoint for user login and review it.',
     });
 
-    expect(turn.plan.tasks.map((task) => task.owner)).toEqual(['orchestrator', 'beam', 'vera']);
+    expect(turn.plan.tasks.map((task) => task.owner)).toEqual(['orchestrator', 'nova', 'beam', 'vera', 'nova']);
     expect(turn.plan.tasks[1]?.deps).toEqual(['task_planning']);
-    expect(turn.plan.tasks[2]?.deps).toEqual(['task_beam']);
+    expect(turn.plan.tasks[2]?.deps).toEqual(['task_planning', 'task_nova']);
+    expect(turn.plan.tasks[3]?.deps).toEqual(['task_beam']);
+    // The architecture check reviews the build in parallel with the quality review.
+    expect(turn.plan.tasks[4]?.id).toBe('task_nova_review');
+    expect(turn.plan.tasks[4]?.deps).toEqual(['task_beam']);
+    expect(turn.plan.tasks[4]?.stageId).toBe('review');
+    expect(turn.plan.tasks[4]?.stageKind).toBe('review');
   });
 
   it('ignores stale external adapter requests unless explicitly enabled', () => {
@@ -235,9 +247,10 @@ describe('Roundtable clean workflow', () => {
   });
 
   it('can dispatch through an explicitly enabled external CLI command adapter', async () => {
-    process.env.ROUNDTABLE_ENABLE_EXTERNAL_AGENT = '1';
-    process.env.ROUNDTABLE_AGENT_COMMAND = 'printf';
-    process.env.ROUNDTABLE_AGENT_ARGS = '{prompt}';
+    await configureRuntimeOutput('orchestrator', 'external planner output');
+    await configureRuntimeOutput('nova', 'external architecture output');
+    await configureRuntimeOutput('atlas', 'external implementer output');
+    await configureRuntimeOutput('vera', 'external reviewer output');
 
     const workbench = await createWorkbench(actor, {
       name: 'External adapter test',
@@ -254,6 +267,7 @@ describe('Roundtable clean workflow', () => {
     });
 
     const approval = await approveTurn({
+      actor,
       turnId: turn.id,
       decision: 'approve',
       autoDispatch: true,
@@ -263,5 +277,16 @@ describe('Roundtable clean workflow', () => {
     expect(approval.dispatchAdapter).toBe('agent-cli');
     expect(approval.dispatchStatus).toBe('completed');
     expect(approval.records.every((record) => record.events.some((event) => event.type === 'tool_use'))).toBe(true);
-  });
+    // Spawns one node fixture per task (5 with the architect bracket); under
+    // full-suite CPU contention the default 5s budget flakes.
+  }, 30_000);
 });
+
+async function configureRuntimeOutput(agentId: string, text: string): Promise<void> {
+  await saveAgentRuntimeConfig({
+    agentId,
+    runtime: 'claude-code',
+    command: process.execPath,
+    args: ['-e', `process.stdout.write(${JSON.stringify(text)})`],
+  });
+}

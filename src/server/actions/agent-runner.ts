@@ -1,11 +1,26 @@
-import { spawn } from 'node:child_process';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { readData } from '../store.js';
 import type { AgentEvent, ArtifactKind, PlanTask } from '../types.js';
 import { agentForTask, type AgentProfile } from './agent-roster.js';
+import { deliverableText } from './deliverable.js';
 import { runOnE2B } from './adapters/e2b-adapter.js';
-import { miniMaxModel, MiniMaxUnavailableError, runOnMiniMax } from './adapters/minimax-adapter.js';
-import { openAICompatModel, OpenAICompatUnavailableError, runOnOpenAICompat } from './adapters/openai-compat-adapter.js';
+import { MiniMaxUnavailableError, resolvedMiniMaxModel, runOnMiniMax } from './adapters/minimax-adapter.js';
+import { OpenAICompatUnavailableError, resolvedOpenAICompatModel, runOnOpenAICompat } from './adapters/openai-compat-adapter.js';
+import { configuredRuntimeForAgent, mergedRuntimeConfigForAgent } from './cli-runtimes/registry.js';
+import { executeCliRuntime } from './cli-runtimes/runner.js';
+import {
+  clearCliSession,
+  cliSessionFor,
+  runtimeSupportsResume,
+  saveCliSession,
+} from './cli-runtimes/sessions.js';
+import {
+  createRuntimeConversation,
+  finishRuntimeConversation,
+  runtimeConversationCallbacks,
+} from './runtime-actions.js';
+import { collectChangedWorkspaceFiles, type ChangedWorkspaceFile } from './turns/workspace-scan.js';
 
 export type AgentRunResult = {
   text: string;
@@ -14,6 +29,10 @@ export type AgentRunResult = {
   events: AgentEvent[];
   ok: boolean;
   error: string | null;
+  // Real files the agent produced or edited in the workspace during this run
+  // (CLI-backed agents only). These are the deliverables; `text` is the
+  // agent's narration and must never be presented as the product.
+  files?: ChangedWorkspaceFile[] | undefined;
 };
 
 export async function runAgentTask(input: {
@@ -21,7 +40,12 @@ export async function runAgentTask(input: {
   workspace: string;
   task: PlanTask;
   message: string;
+  turnId?: string | undefined;
+  // Chat the turn belongs to: the scope for CLI session reuse, so consecutive
+  // turns in one chat resume the same CLI conversation.
+  chatId?: string | null | undefined;
   handoffContext?: string | undefined;
+  runtimeEnv?: NodeJS.ProcessEnv | undefined;
 }): Promise<AgentRunResult> {
   const adapter = normalizeAdapter(input.adapter);
   if (adapter === 'minimax') {
@@ -48,13 +72,15 @@ export function normalizeAdapter(
   // Accept a few friendly aliases for the same code path.
   if (raw === 'openai-compat' || raw === 'openai' || raw === 'deepseek') return 'openai-compat';
   if (raw === 'e2b') return 'e2b';
-  const wantsExternalCli = raw === 'agent-cli'
-    || raw === 'external-cli'
-    || raw === 'claude'
+  if (raw === 'agent-cli' || raw === 'external-cli' || raw === 'cli-runtime' || raw === 'runtime' || raw === 'cli') {
+    return 'agent-cli';
+  }
+  const wantsExternalCli = raw === 'claude'
     || raw === 'claude-code'
     || raw === 'claude-cli'
-    || raw === 'opencode'
-    || raw === 'cli';
+    || raw === 'codex'
+    || raw === 'codex-cli'
+    || raw === 'opencode';
   if (wantsExternalCli && externalCliEnabled()) return 'agent-cli';
   return 'local-dispatch';
 }
@@ -97,53 +123,143 @@ async function runAgentCliTask(input: {
   workspace: string;
   task: PlanTask;
   message: string;
+  turnId?: string | undefined;
+  chatId?: string | null | undefined;
   handoffContext?: string | undefined;
+  runtimeEnv?: NodeJS.ProcessEnv | undefined;
 }): Promise<AgentRunResult> {
   const agent = agentForTask(input.task);
-  const path = pathForTask(input.task);
+  // A CLI-backed agent edits real files in the workspace; its stdout is a
+  // transcript, not the deliverable. The transcript is therefore stored as a
+  // Markdown log — NEVER as .html — and the actual deliverables are collected
+  // from the workspace after the run.
+  const path = transcriptPathForTask(input.task);
   const prompt = agentPrompt(agent, input);
-  const command = commandForAgent(agent);
-  const args = commandArgs(prompt, agent);
+  const data = await readData();
+  const runtimeEnv = input.runtimeEnv ?? process.env;
+  const runtime = configuredRuntimeForAgent(agent, data.agentRuntimeConfigs, runtimeEnv);
+  if (runtime === 'local-dispatch') return runLocalTask(input);
+
+  const config = mergedRuntimeConfigForAgent(
+    agent,
+    runtime,
+    data.agentRuntimeConfigs,
+    data.agentRuntimeDefaults,
+  );
+  const conversation = await createRuntimeConversation({
+    agent,
+    runtime,
+    title: input.task.title,
+    workspacePath: input.workspace,
+    turnId: input.turnId ?? null,
+    taskId: input.task.id,
+  });
   const toolId = `tool_${input.task.id}`;
   const started: AgentEvent[] = [
-    { type: 'thinking_delta', delta: `Starting ${agent.displayName} through CLI: ${command}` },
+    { type: 'thinking_delta', delta: `Starting ${agent.displayName} through ${runtime}.` },
     {
       type: 'tool_use',
       id: toolId,
-      name: 'agent_cli',
-      input: { command, agentId: agent.id, role: agent.role, path },
+      name: 'agent_runtime',
+      input: { runtime, agentId: agent.id, role: agent.role, path, conversationId: conversation.id },
     },
   ];
 
   try {
-    const result = await runCommand(command, args, input.workspace, timeoutMs());
-    const output = result.stdout.trim() || result.stderr.trim();
-    const ok = result.exitCode === 0 && output.length > 0;
-    const text = ok ? output : `# ${input.task.title}\n\nAgent CLI did not produce a usable result.\n\n${result.stderr || result.stdout}`;
-    await writeWorkspaceFile(input.workspace, path, text);
+    // Small backdate so a file the CLI writes in the same tick as the spawn is
+    // never missed by the post-run mtime scan.
+    const startedMs = Date.now() - 2_000;
+    // Session continuity: resume the chat's stored CLI session for this agent
+    // so the model keeps its conversation memory across turns. Scope state
+    // (router HOME/port) by chat, falling back to turn for chat-less runs.
+    const sessionScope = input.chatId ?? input.turnId ?? input.task.id;
+    const storedSession = runtimeSupportsResume(runtime)
+      ? await cliSessionFor(input.workspace, runtime, agent.id)
+      : null;
+    const runOnce = (resumeSessionId: string | undefined) => executeCliRuntime({
+      conversationId: conversation.id,
+      runtime,
+      agent,
+      config,
+      workspace: input.workspace,
+      prompt,
+      timeoutMs: timeoutMs(),
+      idleTimeoutMs: idleTimeoutMs(),
+      envSnapshot: runtimeEnv,
+      callbacks: runtimeConversationCallbacks(conversation.id),
+      resumeSessionId,
+      sessionScopeId: sessionScope,
+    });
+    let result = await runOnce(storedSession ?? undefined);
+    let staleSessionNote: AgentEvent | null = null;
+    // A stored session can expire or vanish (CLI state cleaned, HOME moved). A
+    // failed resume must not brick the chat: drop it and retry cold once.
+    if (!result.ok && storedSession) {
+      await clearCliSession(input.workspace, runtime, agent.id);
+      staleSessionNote = {
+        type: 'thinking_delta',
+        delta: `Resuming CLI session ${storedSession} failed; retried with a fresh session.`,
+      };
+      result = await runOnce(undefined);
+    }
+    const ok = result.ok;
+    if (ok && result.sessionId) {
+      await saveCliSession(input.workspace, runtime, agent.id, result.sessionId);
+    }
+    const text = ok
+      ? result.text
+      : `# ${input.task.title}\n\n${runtime} did not produce a usable result.\n\n${result.text}`;
+    await writeWorkspaceFile(input.workspace, path, transcriptMarkdown(input.task, agent.displayName, runtime, text));
+    const scan = ok
+      ? await collectChangedWorkspaceFiles(input.workspace, startedMs)
+      : { files: [], skipped: [] };
+    await finishRuntimeConversation(conversation.id, ok ? 'completed' : 'failed', result.error, result.sessionId);
     return {
       text,
       path,
-      kind: kindForPath(path),
+      kind: 'markdown',
       ok,
-      error: ok ? null : `external_cli_exit_${result.exitCode}`,
+      error: result.error,
+      files: scan.files,
       events: [
         ...started,
+        ...(staleSessionNote ? [staleSessionNote] : []),
         {
           type: 'tool_result',
           id: toolId,
-          output: { exitCode: result.exitCode, stdoutBytes: result.stdout.length, stderrBytes: result.stderr.length },
+          output: {
+            runtime,
+            command: result.command,
+            pid: result.pid ?? 0,
+            chars: result.text.length,
+            conversationId: conversation.id,
+          },
           ...(ok ? {} : { isError: true }),
         },
-        { type: 'file_change', path, kind: 'create', diff: `created ${path}` },
-        { type: 'text_delta', delta: ok ? `${agent.displayName} completed via CLI; transcript saved at ${path}.` : `Agent CLI failed; captured diagnostic artifact at ${path}.` },
-        ok ? { type: 'done', finishReason: 'completed' } : { type: 'error', message: `external_cli_exit_${result.exitCode}`, recoverable: true },
+        ...result.events,
+        ...scan.files.map((file): AgentEvent => (
+          { type: 'file_change', path: file.path, kind: 'edit', diff: `produced ${file.path}` }
+        )),
+        ...(scan.skipped.length > 0
+          ? [{
+              type: 'text_delta',
+              delta: `${scan.skipped.length} changed file(s) not captured as artifacts (binary, oversized, or over the cap): ${scan.skipped.slice(0, 5).join(', ')}${scan.skipped.length > 5 ? ', …' : ''}`,
+            } as AgentEvent]
+          : []),
+        {
+          type: 'text_delta',
+          delta: ok
+            ? `${agent.displayName} completed via ${runtime}; ${scan.files.length} deliverable file(s) captured, transcript at ${path}.`
+            : `${runtime} failed; captured diagnostic log at ${path}.`,
+        },
+        ok ? { type: 'done', finishReason: 'completed' } : { type: 'error', message: result.error ?? 'runtime_failed', recoverable: true },
       ],
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const text = `# ${input.task.title}\n\nAgent CLI failed before producing output.\n\n${message}`;
     await writeWorkspaceFile(input.workspace, path, text);
+    await finishRuntimeConversation(conversation.id, 'failed', message);
     return {
       text,
       path,
@@ -209,6 +325,123 @@ function e2bAgentEnv(): Record<string, string> {
   return env;
 }
 
+// Shared implementation for chat-only model adapters (MiniMax, OpenAI-compat):
+// same prompts, same deliverable extraction, same failure semantics. Only the
+// transport call and display metadata differ per provider.
+type ChatModelRun = (input: {
+  messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>;
+  timeoutMs?: number | undefined;
+  maxTokens?: number | undefined;
+}) => Promise<{ text: string; usage?: Record<string, unknown> | undefined; finishReason?: string | undefined }>;
+
+async function runChatModelTask(
+  input: {
+    workspace: string;
+    task: PlanTask;
+    message: string;
+    handoffContext?: string | undefined;
+  },
+  provider: { name: string; toolName: string; model: string; run: ChatModelRun; isUnavailable: (error: unknown) => boolean },
+): Promise<AgentRunResult> {
+  const agent = agentForTask(input.task);
+  const path = pathForTask(input.task);
+  const toolId = `tool_${input.task.id}`;
+  const system = chatAgentPrompt(agent, input);
+  const user = input.handoffContext
+    ? `Task: ${input.task.title}\n\nContext from earlier agents:\n\n${input.handoffContext}\n\nCreate the next useful output for your role.`
+    : `Task: ${input.task.title}\n\nCreate the next useful output for your role.`;
+  const started: AgentEvent[] = [
+    { type: 'thinking_delta', delta: `${agent.displayName} querying ${provider.model}.` },
+    { type: 'tool_use', id: toolId, name: provider.toolName, input: { agentId: agent.id, role: agent.role, path } },
+  ];
+
+  const failure = async (message: string, rawResponse?: string): Promise<AgentRunResult> => {
+    const text = [
+      `# ${input.task.title}`,
+      '',
+      `${provider.name} did not produce a usable deliverable for ${path}.`,
+      '',
+      `Error: ${message}`,
+      ...(rawResponse ? ['', '---', '', rawResponse.slice(0, 2000)] : []),
+    ].join('\n');
+    await writeWorkspaceFile(input.workspace, path, text);
+    return {
+      text,
+      path,
+      kind: kindForPath(path),
+      ok: false,
+      error: message,
+      events: [
+        ...started,
+        { type: 'tool_result', id: toolId, output: { error: message }, isError: true },
+        { type: 'error', message, recoverable: true },
+      ],
+    };
+  };
+
+  try {
+    // Deliverables (full HTML pages especially) routinely exceed one response's
+    // token ceiling and come back cut mid-tag — the model writes <head> CSS
+    // first, so a single truncated response renders as a BLANK page. When the
+    // provider reports finish_reason=length, ask it to continue from the exact
+    // cut point and stitch the halves, bounded by maxModelContinuations().
+    let messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
+      { role: 'system', content: system },
+      { role: 'user', content: user },
+    ];
+    let combined = '';
+    let run: Awaited<ReturnType<ChatModelRun>>;
+    let rounds = 0;
+    do {
+      run = await provider.run({
+        messages,
+        timeoutMs: timeoutMs(),
+        maxTokens: modelMaxTokens(),
+      });
+      combined += run.text;
+      if (run.finishReason !== 'length') break;
+      messages = [
+        ...messages,
+        { role: 'assistant', content: run.text },
+        {
+          role: 'user',
+          content: 'Your previous output was cut off mid-way. Continue EXACTLY from where it stopped. '
+            + 'Do not repeat anything you already wrote, do not add any preamble or code fences — '
+            + 'output only the remaining content.',
+        },
+      ];
+      rounds += 1;
+    } while (rounds <= maxModelContinuations());
+    // Extraction is strict on purpose: a .html artifact holding prose, a raw
+    // fence, or a page cut before <body> is worse than a failed task, because a
+    // failure feeds the review→fix loop while a garbage artifact ships as
+    // "completed".
+    const text = deliverableText(combined, path);
+    if (text === null || text.length === 0) {
+      return failure('deliverable_not_usable', combined);
+    }
+    await writeWorkspaceFile(input.workspace, path, text);
+    const reasoningTokens = (run.usage?.['completion_tokens_details'] as { reasoning_tokens?: number } | undefined)?.reasoning_tokens;
+    return {
+      text,
+      path,
+      kind: kindForPath(path),
+      ok: true,
+      error: null,
+      events: [
+        ...started,
+        { type: 'tool_result', id: toolId, output: { model: provider.model, reasoningTokens: reasoningTokens ?? 0, chars: text.length } },
+        { type: 'file_change', path, kind: 'create', diff: `created ${path}` },
+        { type: 'text_delta', delta: `${agent.displayName} produced ${path} via ${provider.model}.` },
+        { type: 'done', finishReason: 'completed' },
+      ],
+    };
+  } catch (error) {
+    if (provider.isUnavailable(error)) throw error; // let dispatch fall back
+    return failure(error instanceof Error ? error.message : String(error));
+  }
+}
+
 // Runs the task against the real MiniMax model. Throws MiniMaxUnavailableError
 // (from runOnMiniMax) when no key is set — the dispatch layer catches it and
 // falls back to local-dispatch.
@@ -218,139 +451,50 @@ async function runMiniMaxTask(input: {
   message: string;
   handoffContext?: string | undefined;
 }): Promise<AgentRunResult> {
-  const agent = agentForTask(input.task);
-  const path = pathForTask(input.task);
-  const toolId = `tool_${input.task.id}`;
-  const system = chatAgentPrompt(agent, input);
-  const user = input.handoffContext
-    ? `Task: ${input.task.title}\n\nUpstream deliverable to build on / review:\n\n${input.handoffContext}\n\nProduce your deliverable now.`
-    : `Task: ${input.task.title}\n\nProduce your deliverable now.`;
-  const started: AgentEvent[] = [
-    { type: 'thinking_delta', delta: `${agent.displayName} querying MiniMax model.` },
-    { type: 'tool_use', id: toolId, name: 'minimax_chat', input: { agentId: agent.id, role: agent.role, path } },
-  ];
-  try {
-    const run = await runOnMiniMax({
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user', content: user },
-      ],
-      timeoutMs: timeoutMs(),
-    });
-    const text = deliverableText(run.text.trim(), path) || `# ${input.task.title}\n\nMiniMax returned no usable content.`;
-    await writeWorkspaceFile(input.workspace, path, text);
-    const reasoningTokens = (run.usage?.['completion_tokens_details'] as { reasoning_tokens?: number } | undefined)?.reasoning_tokens;
-    return {
-      text,
-      path,
-      kind: kindForPath(path),
-      ok: true,
-      error: null,
-      events: [
-        ...started,
-        { type: 'tool_result', id: toolId, output: { model: miniMaxModel(), reasoningTokens: reasoningTokens ?? 0, chars: text.length } },
-        { type: 'file_change', path, kind: 'create', diff: `created ${path}` },
-        { type: 'text_delta', delta: `${agent.displayName} produced ${path} via MiniMax.` },
-        { type: 'done', finishReason: 'completed' },
-      ],
-    };
-  } catch (error) {
-    if (error instanceof MiniMaxUnavailableError) throw error; // let dispatch fall back
-    const message = error instanceof Error ? error.message : String(error);
-    const text = `# ${input.task.title}\n\nMiniMax request failed.\n\n${message}`;
-    await writeWorkspaceFile(input.workspace, path, text);
-    return {
-      text,
-      path,
-      kind: kindForPath(path),
-      ok: false,
-      error: message,
-      events: [
-        ...started,
-        { type: 'tool_result', id: toolId, output: { error: message }, isError: true },
-        { type: 'error', message, recoverable: true },
-      ],
-    };
-  }
+  const model = await resolvedMiniMaxModel();
+  return runChatModelTask(input, {
+    name: 'MiniMax',
+    toolName: 'minimax_chat',
+    model,
+    run: runOnMiniMax,
+    isUnavailable: (error) => error instanceof MiniMaxUnavailableError,
+  });
 }
 
 // Runs the task against the configured OpenAI-compatible model. Throws
 // OpenAICompatUnavailableError (from runOnOpenAICompat) when unconfigured — the
-// dispatch layer catches it and falls back to local-dispatch. Like runMiniMaxTask
-// this is a chat-only model: the deliverable comes back in the response text (no
-// shell / file tools).
+// dispatch layer catches it and falls back to local-dispatch.
 async function runOpenAICompatTask(input: {
   workspace: string;
   task: PlanTask;
   message: string;
   handoffContext?: string | undefined;
 }): Promise<AgentRunResult> {
-  const agent = agentForTask(input.task);
-  const path = pathForTask(input.task);
-  const toolId = `tool_${input.task.id}`;
-  const system = chatAgentPrompt(agent, input);
-  const user = input.handoffContext
-    ? `Task: ${input.task.title}\n\nUpstream deliverable to build on / review:\n\n${input.handoffContext}\n\nProduce your deliverable now.`
-    : `Task: ${input.task.title}\n\nProduce your deliverable now.`;
-  const started: AgentEvent[] = [
-    { type: 'thinking_delta', delta: `${agent.displayName} querying ${openAICompatModel()}.` },
-    { type: 'tool_use', id: toolId, name: 'model_chat', input: { agentId: agent.id, role: agent.role, path } },
-  ];
-  try {
-    const run = await runOnOpenAICompat({
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user', content: user },
-      ],
-      timeoutMs: timeoutMs(),
-    });
-    const text = deliverableText(run.text.trim(), path) || `# ${input.task.title}\n\nModel returned no usable content.`;
-    await writeWorkspaceFile(input.workspace, path, text);
-    const reasoningTokens = (run.usage?.['completion_tokens_details'] as { reasoning_tokens?: number } | undefined)?.reasoning_tokens;
-    return {
-      text,
-      path,
-      kind: kindForPath(path),
-      ok: true,
-      error: null,
-      events: [
-        ...started,
-        { type: 'tool_result', id: toolId, output: { model: openAICompatModel(), reasoningTokens: reasoningTokens ?? 0, chars: text.length } },
-        { type: 'file_change', path, kind: 'create', diff: `created ${path}` },
-        { type: 'text_delta', delta: `${agent.displayName} produced ${path} via ${openAICompatModel()}.` },
-        { type: 'done', finishReason: 'completed' },
-      ],
-    };
-  } catch (error) {
-    if (error instanceof OpenAICompatUnavailableError) throw error; // let dispatch fall back
-    const message = error instanceof Error ? error.message : String(error);
-    const text = `# ${input.task.title}\n\nModel request failed.\n\n${message}`;
-    await writeWorkspaceFile(input.workspace, path, text);
-    return {
-      text,
-      path,
-      kind: kindForPath(path),
-      ok: false,
-      error: message,
-      events: [
-        ...started,
-        { type: 'tool_result', id: toolId, output: { error: message }, isError: true },
-        { type: 'error', message, recoverable: true },
-      ],
-    };
-  }
+  const model = await resolvedOpenAICompatModel();
+  return runChatModelTask(input, {
+    name: model,
+    toolName: 'model_chat',
+    model,
+    run: runOnOpenAICompat,
+    isUnavailable: (error) => error instanceof OpenAICompatUnavailableError,
+  });
 }
 
 function pathForTask(task: PlanTask): string {
-  const slug = task.title
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-|-$/g, '')
-    .slice(0, 64) || task.id;
+  // A fixer repairing a concrete deliverable writes the corrected output to the
+  // SAME path as the original, so the fix replaces the flawed page instead of
+  // landing in a markdown file nobody previews.
+  if (task.repairTargetPath) return task.repairTargetPath;
+  const slug = taskSlug(task);
   const agent = agentForTask(task);
+  // Answering a question produces notes, never a page — regardless of whether
+  // the question mentions a website.
+  if (task.stageId === 'answer') return `.roundtable/runs/docs/${slug}.md`;
   // A web/page build should produce a previewable HTML artifact, not a Markdown
   // doc — otherwise the model is never asked for a real page and the UI can't
   // render a preview. Detect intent from the task's text (title + brief).
+  // Applies to chat-only model adapters, whose response text IS the deliverable;
+  // CLI-backed agents write real files instead (see transcriptPathForTask).
   if (agent.role === 'implementer') {
     const ext = wantsWebPage(`${task.title} ${task.brief}`) ? 'html' : 'md';
     return `.roundtable/runs/work/${slug}.${ext}`;
@@ -358,6 +502,31 @@ function pathForTask(task: PlanTask): string {
   if (agent.role === 'reviewer') return `.roundtable/runs/review/${slug}.md`;
   if (agent.role === 'fixer') return `.roundtable/runs/fixes/${slug}.md`;
   return `.roundtable/runs/docs/${slug}.md`;
+}
+
+// Where a CLI-backed agent's run transcript is stored. Always Markdown: the
+// transcript is narration about the work, and storing it as .html is what used
+// to make the UI "preview" a wall of prose instead of the built page.
+export function transcriptPathForTask(task: PlanTask): string {
+  return `.roundtable/runs/logs/${taskSlug(task)}.md`;
+}
+
+function taskSlug(task: PlanTask): string {
+  return task.title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 64) || task.id;
+}
+
+function transcriptMarkdown(task: PlanTask, agentName: string, runtime: string, text: string): string {
+  return [
+    `# Run log · ${task.title}`,
+    '',
+    `Agent: ${agentName} · Runtime: ${runtime}`,
+    '',
+    text,
+  ].join('\n');
 }
 
 // Does this build target a renderable web page? Covers EN + 中文 vocabulary.
@@ -369,23 +538,6 @@ function kindForPath(path: string): ArtifactKind {
   if (path.endsWith('.html')) return 'preview';
   if (path.endsWith('.ts') || path.endsWith('.tsx') || path.endsWith('.js')) return 'code';
   return 'markdown';
-}
-
-// Chat models often wrap a code/HTML deliverable in a Markdown code fence
-// (```html … ```) despite being told not to. For artifacts that are meant to be
-// raw code/HTML (rendered in an iframe or saved as a source file), unwrap a
-// single enclosing fence so the file is the real content, not fenced text.
-// Markdown artifacts (.md) keep their fences — they're documents.
-function stripCodeFence(text: string): string {
-  const trimmed = text.trim();
-  // Only unwrap when the WHOLE response is one fenced block, to avoid mangling
-  // docs that legitimately contain multiple code snippets.
-  const match = trimmed.match(/^```[a-zA-Z0-9]*\n([\s\S]*?)\n?```$/);
-  return match ? match[1]!.trim() : trimmed;
-}
-
-function deliverableText(text: string, path: string): string {
-  return path.endsWith('.md') ? text : stripCodeFence(text);
 }
 
 async function writeWorkspaceFile(workspace: string, relativePath: string, text: string): Promise<void> {
@@ -554,21 +706,55 @@ function commandArgs(prompt: string, agent: AgentProfile): string[] {
   return ['-p', prompt, '--permission-mode', 'bypassPermissions'];
 }
 
+// The architect's standing mandate — the same principles govern both the
+// upfront design pass and the post-build architecture check.
+const ARCHITECT_PRINCIPLES = [
+  'Architecture principles you enforce:',
+  '1. Software-engineering discipline: SOLID, separation of concerns, DRY, KISS. Prefer boring, proven patterns over clever ones.',
+  '2. Modularity: small cohesive modules with clear boundaries and single responsibilities; no god-files. Organize by feature/domain.',
+  '3. No hardcoding: magic numbers, inline URLs/keys, duplicated string literals, and copy-pasted logic must be routed through named constants, configuration, or shared utilities.',
+  '4. Built for what comes next: design so future features extend the system instead of rewriting it — reuse existing modules wherever possible, and make the seams for extension explicit.',
+].join('\n');
+
+// Design (plan stage) and the post-build check (review stage) are different
+// jobs: the first produces the blueprint the implementer follows, the second
+// audits the implementation against it and gates delivery.
+function architectInstruction(task: PlanTask): string {
+  if ((task.stageKind ?? task.stageId) === 'review') {
+    return 'Audit the implemented code against the architecture principles below. '
+      + 'Verify modular structure (small cohesive files, clear boundaries), flag every hardcoded value and every piece of '
+      + 'copy-pasted logic that should be extracted into a shared module, and confirm the structure supports future extension. '
+      + 'Report concrete findings with severity labels (Critical/High/Medium) and file references. Do NOT rewrite the code '
+      + 'yourself — a fixer applies your findings. If the architecture is solid, say so explicitly.';
+  }
+  return 'Design the technical architecture BEFORE any code is written: module boundaries, file/folder structure, '
+    + 'data contracts and interfaces, naming conventions, and the dependency order of the work. Map which existing code '
+    + 'or modules should be reused instead of rewritten. Write the architecture document to a file the implementer can '
+    + 'follow directly (e.g. docs/architecture.md in the workspace), and keep it concrete: name the files to create and '
+    + 'what belongs in each. Do NOT implement the product itself.';
+}
+
 function agentPrompt(agent: AgentProfile, input: { task: PlanTask; message: string; handoffContext?: string | undefined }): string {
-  const roleInstruction = {
-    planner: 'Create the initial breakdown and routing. Do not implement unless the task explicitly asks only for planning.',
-    pm: 'Clarify product intent, constraints, acceptance criteria, and sequencing.',
-    architect: 'Design the technical approach, interfaces, risks, and dependency order.',
-    implementer: 'Modify the project files needed to complete your assigned slice.',
-    reviewer: 'Review the current project state and report concrete issues, risks, and missing tests.',
-    fixer: 'Apply focused fixes for known issues and summarize changed files.',
-  }[agent.role];
+  const roleInstruction = input.task.stageId === 'answer'
+    ? 'Answer the user\'s question directly, using the files in this workspace as reference. '
+      + 'Do NOT create, modify, or delete any files and do NOT produce a plan — reply with the answer itself in Markdown.'
+    : {
+        planner: 'Create the initial breakdown and routing. Do not implement unless the task explicitly asks only for planning.',
+        pm: 'Clarify product intent, constraints, acceptance criteria, and sequencing.',
+        architect: architectInstruction(input.task),
+        implementer: 'Modify the project files needed to complete your assigned slice. '
+          + 'Follow the architecture document from the previous agent output if one is provided: respect its module '
+          + 'boundaries and file structure, reuse the modules it maps out, and keep values configurable instead of hardcoded.',
+        reviewer: 'Review the current project state and report concrete issues, risks, and missing tests.',
+        fixer: 'Apply focused fixes for known issues and summarize changed files.',
+      }[agent.role];
 
   return [
     'You are running inside Roundtable as one CLI-backed coding agent.',
     `Agent: ${agent.displayName} (${agent.id})`,
     `Role: ${agent.role}`,
     `Instruction: ${roleInstruction}`,
+    ...(agent.role === 'architect' ? [ARCHITECT_PRINCIPLES] : []),
     `Task: ${input.task.title}`,
     `Brief: ${input.task.brief}`,
     `Original user request: ${input.message}`,
@@ -590,21 +776,26 @@ function chatAgentPrompt(
   input: { task: PlanTask; message: string; handoffContext?: string | undefined },
 ): string {
   const isHtml = pathForTask(input.task).endsWith('.html');
-  const roleInstruction = {
-    planner: 'Break the goal into a short, ordered task list with clear ownership. Output the plan as Markdown.',
-    pm: 'State the product intent, constraints, and acceptance criteria as Markdown.',
-    architect: 'Describe the technical approach, key interfaces, and risks as Markdown.',
+  const roleInstruction = input.task.stageId === 'answer'
+    ? 'Answer the user\'s question directly and concisely in Markdown. Do not produce a plan or a deliverable page.'
+    : {
+    planner: 'Map the goal into a practical next-step plan. Keep it useful and concise.',
+    pm: 'Clarify product intent, constraints, acceptance criteria, and sequencing.',
+    architect: (input.task.stageKind ?? input.task.stageId) === 'review'
+      ? 'Audit the upstream implementation for software-engineering discipline: modularity, no hardcoded values, reusable structure. Report findings with Critical/High/Medium labels; if it is solid, say so explicitly.'
+      : 'Design the architecture the implementer should follow: module boundaries, file structure, data contracts, naming, and what existing code to reuse. No hardcoded values — name the constants/config instead.',
     implementer: isHtml
-      ? 'Output a COMPLETE, self-contained HTML document (with inline CSS/JS) that fulfills the task. Output only the HTML, no prose, no code fences.'
-      : 'Output the complete deliverable content directly (code or Markdown). Do not describe what you would do — produce it.',
-    reviewer: 'Review the upstream deliverable. Output a Markdown report: concrete issues, risks, and missing pieces, each with severity. If it is solid, say so explicitly.',
-    fixer: 'Apply a focused fix for the reported problem and output the corrected deliverable plus a short summary of what changed.',
+      ? 'Produce a usable HTML artifact. Prefer concise, complete HTML with head and body content; choose the structure and visual approach that best fits the task.'
+      : 'Produce the useful deliverable content directly. Choose Markdown, code, or structured notes as appropriate.',
+    reviewer: 'Review the upstream work plainly. Call out concrete issues and risks; if it is solid, say so explicitly.',
+    fixer: isHtml
+      ? 'Repair the upstream HTML deliverable. Preserve what works, fix the reported problem, and return the corrected artifact.'
+      : 'Apply a focused fix for the reported problem and output the corrected deliverable or a concise repair summary.',
   }[agent.role] ?? 'Produce your deliverable directly in the response.';
 
   return [
-    'You are one specialist on the Roundtable AI team. You respond through a chat API:',
-    'you have NO shell and NO file system — never emit commands like `ls` or `cat`.',
-    'Put your entire deliverable directly in your reply.',
+    'You are one specialist on the Roundtable AI team. You respond through a chat API.',
+    'You do not have shell or file-system access, so put your useful output directly in the reply.',
     `You are ${agent.displayName}, the ${agent.role}.`,
     `Instruction: ${roleInstruction}`,
     `Original user request: ${input.message}`,
@@ -619,33 +810,27 @@ function splitArgs(raw: string): string[] {
   return raw.split(/\s+/).map((item) => item.trim()).filter(Boolean);
 }
 
-function timeoutMs(): number {
+function timeoutMs(): number | undefined {
   const parsed = Number(process.env.ROUNDTABLE_AGENT_TIMEOUT_MS);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 120_000;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
-async function runCommand(
-  command: string,
-  args: string[],
-  cwd: string,
-  timeout: number,
-): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-  const child = spawn(command, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
-  let stdout = '';
-  let stderr = '';
-  child.stdout.setEncoding('utf8');
-  child.stderr.setEncoding('utf8');
-  child.stdout.on('data', (chunk: string) => {
-    stdout += chunk;
-  });
-  child.stderr.on('data', (chunk: string) => {
-    stderr += chunk;
-  });
-  const timer = setTimeout(() => child.kill('SIGTERM'), timeout);
-  const exitCode = await new Promise<number>((resolve, reject) => {
-    child.on('error', reject);
-    child.on('close', (code) => resolve(code ?? 1));
-  });
-  clearTimeout(timer);
-  return { exitCode, stdout, stderr };
+function idleTimeoutMs(): number | undefined {
+  const parsed = Number(process.env.ROUNDTABLE_AGENT_IDLE_TIMEOUT_MS);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 30 * 60 * 1000;
+}
+
+// Optional output ceiling for chat model deliverables. Unset by default: the
+// provider's own limit applies, and length-cut responses are stitched back
+// together by the continuation loop in runChatModelTask.
+function modelMaxTokens(): number | undefined {
+  const parsed = Number(process.env.ROUNDTABLE_MODEL_MAX_TOKENS);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+// How many "continue from where you stopped" rounds a single deliverable may
+// use when the provider reports finish_reason=length (default 2).
+function maxModelContinuations(): number {
+  const parsed = Number(process.env.ROUNDTABLE_MODEL_MAX_CONTINUATIONS);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 2;
 }

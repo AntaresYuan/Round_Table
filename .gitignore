@@ -11,3 +11,4 @@ workspaces/
 tsconfig.tsbuildinfo
 .playwright-mcp/
 test-results/
+.vercel

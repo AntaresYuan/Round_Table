@@ -1,3 +1,6 @@
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   MiniMaxUnavailableError,
@@ -7,21 +10,28 @@ import {
   stripThink,
 } from '../src/server/actions/adapters/minimax-adapter.js';
 import { normalizeAdapter } from '../src/server/actions/agent-runner.js';
+import { resetData } from '../src/server/store.js';
 
 const originalKey = process.env.MINIMAX_API_KEY;
 const originalModel = process.env.MINIMAX_MODEL;
 const originalAdapter = process.env.ROUNDTABLE_AGENT_ADAPTER;
+let tempDir = '';
 
-beforeEach(() => {
+beforeEach(async () => {
+  tempDir = await mkdtemp(join(tmpdir(), 'roundtable-minimax-'));
+  process.env.ROUNDTABLE_DATA_PATH = join(tempDir, 'data.json');
   delete process.env.MINIMAX_API_KEY;
   delete process.env.MINIMAX_MODEL;
   delete process.env.ROUNDTABLE_AGENT_ADAPTER;
+  await resetData();
 });
 
-afterEach(() => {
+afterEach(async () => {
   restore('MINIMAX_API_KEY', originalKey);
   restore('MINIMAX_MODEL', originalModel);
   restore('ROUNDTABLE_AGENT_ADAPTER', originalAdapter);
+  delete process.env.ROUNDTABLE_DATA_PATH;
+  await rm(tempDir, { recursive: true, force: true });
 });
 
 function restore(key: string, value: string | undefined) {

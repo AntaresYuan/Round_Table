@@ -258,11 +258,53 @@ function WfRow({ w, active, onPick }) {
   );
 }
 
-function WorkflowView({ agents, onOpenTemplates }) {
-  const allWf = () => RT.BUILTIN_WORKFLOWS.concat(RT.workflows || []);
-  const [wfId, setWfId] = useStateW(RT.WORKBENCH.workflowId);
+// Fill the editable client stage up to the full server WorkflowTemplate stage
+// shape (the editor only touches name/icon/desc/seats/order/gate/parallel).
+function toServerStage(stage) {
+  const gate = stage.gate && typeof stage.gate === 'object' ? stage.gate : { kind: 'none' };
+  return {
+    id: stage.id,
+    name: stage.name || 'Stage',
+    icon: stage.icon || 'dot',
+    kind: stage.kind || 'work',
+    desc: stage.desc || '',
+    seats: (stage.seats || []).filter((s) => s?.ref?.kind),
+    ...(stage.fixed ? { fixed: true } : {}),
+    ...(stage.parallelGroup ? { parallelGroup: stage.parallelGroup } : {}),
+    gate: {
+      kind: gate.kind || 'none',
+      required: gate.required ?? gate.kind !== 'none',
+      label: gate.label || (GATES.find((g) => g.kind === gate.kind)?.label ?? 'Gate'),
+      description: gate.description || (GATES.find((g) => g.kind === gate.kind)?.hint ?? ''),
+      actions: Array.isArray(gate.actions) ? gate.actions : [],
+    },
+    requiredInputs: Array.isArray(stage.requiredInputs) ? stage.requiredInputs : [],
+    expectedOutputs: Array.isArray(stage.expectedOutputs) ? stage.expectedOutputs : [],
+    requiredCapabilities: Array.isArray(stage.requiredCapabilities) ? stage.requiredCapabilities : [],
+  };
+}
+
+function toServerTemplate(base, name, stages) {
+  return {
+    id: base.id,
+    name: name.trim() || 'Untitled workflow',
+    tag: base.tag ?? null,
+    desc: base.desc || '',
+    version: base.version || 1,
+    planning: base.planning || { cut: 'by_capability', clarifyThreshold: 0.6, maxClarifyQuestions: 3 },
+    stages: stages.map(toServerStage),
+  };
+}
+
+function WorkflowView({ agents, onOpenTemplates, serverTemplates, onSaveTemplate, onDeleteTemplate }) {
+  // Server mode: the editor reads/writes the SAME templates the orchestrator
+  // plans from — edits change what actually runs. localStorage mode remains
+  // for the logged-out demo scene only.
+  const serverMode = Array.isArray(serverTemplates) && serverTemplates.length > 0;
+  const allWf = () => (serverMode ? serverTemplates : RT.BUILTIN_WORKFLOWS.concat(RT.workflows || []));
+  const [wfId, setWfId] = useStateW(serverMode ? serverTemplates[0].id : RT.WORKBENCH.workflowId);
   const [picker, setPicker] = useStateW(false);
-  const base = allWf().find((w) => w.id === wfId) || RT.BUILTIN_WORKFLOWS[0];
+  const base = allWf().find((w) => w.id === wfId) || allWf()[0];
   const [wfName, setWfName] = useStateW(base.name);
   const [stages, setStages] = useStateW(() => clone(base.stages));
   const [drawer, setDrawer] = useStateW(null);
@@ -270,7 +312,8 @@ function WorkflowView({ agents, onOpenTemplates }) {
   const persist = () => { try { localStorage.setItem('rt.workflows', JSON.stringify(RT.workflows)); } catch { /* ignore */ } };
   const switchWorkflow = (id) => {
     const w = allWf().find((x) => x.id === id) || base;
-    setWfId(id); RT.WORKBENCH.workflowId = id; setWfName(w.name); setStages(clone(w.stages)); setDrawer(null); setPicker(false);
+    setWfId(id); if (!serverMode) RT.WORKBENCH.workflowId = id;
+    setWfName(w.name); setStages(clone(w.stages)); setDrawer(null); setPicker(false);
   };
   const newWorkflow = () => {
     const id = 'wf-user-' + Date.now();
@@ -281,11 +324,25 @@ function WorkflowView({ agents, onOpenTemplates }) {
         { id: 's-build-' + Date.now(), name: 'Build', icon: 'code', kind: 'work', desc: 'Describe what happens here.', seats: [], gate: { kind: 'none' } },
         { id: 's-ship-' + Date.now(), name: 'Ship', icon: 'rocket', kind: 'ship', desc: 'Deploy to production.', seats: [], gate: { kind: 'user_approval' } },
       ] };
+    if (serverMode) {
+      onSaveTemplate?.(toServerTemplate(wf, wf.name, wf.stages));
+      setWfId(id); setWfName(wf.name); setStages(clone(wf.stages)); setDrawer(null); setPicker(false);
+      return;
+    }
     RT.workflows = [...(RT.workflows || []), wf]; persist(); switchWorkflow(id);
   };
   useEffectW(() => {
+    if (serverMode) return;
     try { const raw = localStorage.getItem('rt.workflows'); if (raw) RT.workflows = JSON.parse(raw); } catch { /* ignore */ }
-  }, []);
+  }, [serverMode]);
+  // Server templates load async: when they arrive and the selected id is a
+  // client-only workflow, snap the editor onto the first real template.
+  useEffectW(() => {
+    if (!serverMode) return;
+    if (serverTemplates.some((w) => w.id === wfId)) return;
+    const first = serverTemplates[0];
+    setWfId(first.id); setWfName(first.name); setStages(clone(first.stages)); setDrawer(null);
+  }, [serverMode, serverTemplates]);
 
   const patchStage = (i, patch, replace) => setStages((ss) => ss.map((s, j) => (j === i ? (replace ? patch : { ...s, ...patch }) : s)));
   const editStage = (i, field, val) => patchStage(i, { [field]: val });
@@ -301,6 +358,14 @@ function WorkflowView({ agents, onOpenTemplates }) {
   });
 
   const saveWorkflow = () => {
+    if (serverMode) {
+      // Same-id save = override: editing a builtin (reorder stages, change
+      // seats) changes what the orchestrator runs for every future mission
+      // that resolves this template — including keyword auto-select.
+      onSaveTemplate?.(toServerTemplate(base, wfName, stages));
+      setSaved(true); setTimeout(() => setSaved(false), 2600);
+      return;
+    }
     const isUser = !base.builtin;
     const id = isUser ? base.id : 'wf-user-' + Date.now();
     const wf = { ...clone(base), id, name: wfName.trim() || 'Untitled workflow', tag: 'Yours', builtin: false,
@@ -323,6 +388,7 @@ function WorkflowView({ agents, onOpenTemplates }) {
             </p>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
+            <a href="/agents" style={{ ...ghostBtn, textDecoration: 'none' }}><Icon name="code" size={14} /> Agent CLIs</a>
             <button onClick={onOpenTemplates} style={ghostBtn}><Icon name="layers" size={14} /> Start from template</button>
             <button onClick={saveWorkflow} style={{ ...ghostBtn, background: saved ? 'var(--ok)' : 'var(--accent)', color: '#fff', border: 'none', fontWeight: 500 }}>
               <Icon name="check" size={14} /> {saved ? 'Saved to gallery' : 'Save as template'}</button>
@@ -348,10 +414,29 @@ function WorkflowView({ agents, onOpenTemplates }) {
           {picker && (
             <div className="rt-zoom" style={{ position: 'absolute', top: '100%', left: 0, zIndex: 30, marginTop: 6, width: 340,
               background: 'var(--surface)', borderRadius: 'var(--r-card)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-pop)', overflow: 'hidden', padding: 4 }}>
-              <div style={menuLabel}>Built-in</div>
-              {RT.BUILTIN_WORKFLOWS.map((w) => <WfRow key={w.id} w={w} active={w.id === wfId} onPick={() => switchWorkflow(w.id)} />)}
-              {(RT.workflows || []).length > 0 && <div style={menuLabel}>Your workflows</div>}
-              {(RT.workflows || []).map((w) => <WfRow key={w.id} w={w} active={w.id === wfId} onPick={() => switchWorkflow(w.id)} />)}
+              {serverMode ? (
+                <>
+                  <div style={menuLabel}>Workflows · what missions actually run</div>
+                  {serverTemplates.map((w) => (
+                    <WfRow key={w.id} w={w} active={w.id === wfId} onPick={() => switchWorkflow(w.id)} />
+                  ))}
+                  {serverTemplates.some((w) => !w.builtin) && onDeleteTemplate && (
+                    <button
+                      onClick={() => { onDeleteTemplate(wfId); setPicker(false); }}
+                      title="Remove your edits — a built-in id falls back to its default definition"
+                      style={{ ...menuRow, borderTop: '1px solid var(--border)', marginTop: 2, color: 'var(--bad)', fontWeight: 500 }}>
+                      <Icon name="x" size={14} /> Reset current to default
+                    </button>
+                  )}
+                </>
+              ) : (
+                <>
+                  <div style={menuLabel}>Built-in</div>
+                  {RT.BUILTIN_WORKFLOWS.map((w) => <WfRow key={w.id} w={w} active={w.id === wfId} onPick={() => switchWorkflow(w.id)} />)}
+                  {(RT.workflows || []).length > 0 && <div style={menuLabel}>Your workflows</div>}
+                  {(RT.workflows || []).map((w) => <WfRow key={w.id} w={w} active={w.id === wfId} onPick={() => switchWorkflow(w.id)} />)}
+                </>
+              )}
               <button onClick={newWorkflow} style={{ ...menuRow, borderTop: '1px solid var(--border)', marginTop: 2, color: 'var(--accent)', fontWeight: 500 }}>
                 <Icon name="plus" size={14} /> New workflow</button>
             </div>
@@ -376,7 +461,10 @@ function WorkflowView({ agents, onOpenTemplates }) {
         </div>
 
         <div style={{ marginTop: 16, fontSize: 12, color: 'var(--text-faint)', display: 'flex', alignItems: 'center', gap: 7 }}>
-          <Icon name="sparkle" size={13} /> Every task this workbench runs follows these stages — change them once, and the whole team adapts.
+          <Icon name="sparkle" size={13} />
+          {serverMode
+            ? 'Saving updates the real orchestrator template: stage order and seats here ARE the task chain your next mission runs.'
+            : 'Every task this workbench runs follows these stages — change them once, and the whole team adapts.'}
         </div>
       </div>
       {drawer != null && stages[drawer] && (

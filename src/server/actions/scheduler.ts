@@ -185,7 +185,7 @@ export async function runScheduler(opts: SchedulerOpts): Promise<SchedulerRun> {
     state.set(task.id, {
       ...task,
       deps: [...task.deps],
-      status: task.deps.length === 0 ? 'pending' : 'pending',
+      status: 'pending',
       output: null,
       error: null,
       startedAt: null,

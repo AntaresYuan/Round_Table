@@ -1,7 +1,7 @@
 import type { Actor } from '../types.js';
 import { listChats } from './chat-actions.js';
-import { isMiniMaxAvailable, runOnMiniMax } from './adapters/minimax-adapter.js';
-import { isOpenAICompatAvailable, runOnOpenAICompat } from './adapters/openai-compat-adapter.js';
+import { isMiniMaxConfigured, runOnMiniMax } from './adapters/minimax-adapter.js';
+import { isOpenAICompatConfigured, runOnOpenAICompat } from './adapters/openai-compat-adapter.js';
 
 const POLISH_SYSTEM = [
   'You sharpen a product build request for an AI engineering team.',
@@ -26,11 +26,11 @@ export async function polishText(input: { text: string }): Promise<{ text: strin
     { role: 'user' as const, content: text },
   ];
   try {
-    if (isOpenAICompatAvailable()) {
+    if (await isOpenAICompatConfigured()) {
       const run = await runOnOpenAICompat({ messages, maxTokens: 400, temperature: 0.4 });
       const polished = run.text.trim();
       if (polished) return { text: polished };
-    } else if (isMiniMaxAvailable()) {
+    } else if (await isMiniMaxConfigured()) {
       const run = await runOnMiniMax({ messages, maxTokens: 400, temperature: 0.4 });
       const polished = run.text.trim();
       if (polished) return { text: polished };
